@@ -48,6 +48,10 @@ type ResourceInstanceObject struct {
 	// altogether, or is now deposed.
 	Dependencies []addrs.ConfigResource
 
+	// References is the full set of config-derived resource references.
+	// See ResourceInstanceObjectSrc.References.
+	References []addrs.ConfigResource
+
 	// CreateBeforeDestroy reflects the status of the lifecycle
 	// create_before_destroy option when this instance was last updated.
 	// Because create_before_destroy also effects the overall ordering of the
@@ -171,6 +175,11 @@ func (o *ResourceInstanceObject) Encode(ty cty.Type, schemaVersion uint64, ident
 		identitySchemaVer = &identitySchemaVersion
 	}
 
+	// Sort references the same way as dependencies.
+	references := make([]addrs.ConfigResource, len(o.References))
+	copy(references, o.References)
+	sort.Slice(references, func(i, j int) bool { return references[i].String() < references[j].String() })
+
 	return &ResourceInstanceObjectSrc{
 		SchemaVersion:           schemaVersion,
 		IdentitySchemaVersion:   identitySchemaVer,
@@ -181,6 +190,7 @@ func (o *ResourceInstanceObject) Encode(ty cty.Type, schemaVersion uint64, ident
 		IdentityJSON:            identityJSON,
 		Status:                  o.Status,
 		Dependencies:            dependencies,
+		References:              references,
 		CreateBeforeDestroy:     o.CreateBeforeDestroy,
 		SkipDestroy:             o.SkipDestroy,
 		Deferred:                o.Deferred,

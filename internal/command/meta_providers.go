@@ -264,6 +264,10 @@ func (m *Meta) providerFactories() (map[addrs.Provider]providers.Factory, error)
 	for name, factory := range internalFactories {
 		factories[addrs.NewBuiltInProvider(name)] = factory
 	}
+	// Builtin providers (chofu embedded providers) are available without init.
+	for addr, factory := range m.BuiltinProviders {
+		factories[addr] = factory
+	}
 	for provider, lock := range providerLocks {
 		if locks.ProviderIsOverridden(provider) {
 			// Overridden providers we'll handle with the other separate

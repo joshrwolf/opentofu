@@ -13,9 +13,9 @@ func TestGetResourceMetaFromProvider(t *testing.T) {
 
 	provider := &mockBuildMetaProvider{
 		meta: map[string]ResourceMeta{
-			"apko_build":      {Role: RoleBuild, CachePolicy: CachePolicy{Mode: CacheByInputs}},
-			"imagetest_tests": {Role: RoleTest, CachePolicy: CachePolicy{Mode: CacheWithTTL, TTL: 24 * time.Hour}},
-			"oci_tags":        {Role: RolePublish, CachePolicy: CachePolicy{Mode: NeverCache}},
+			"example_build": {Role: RoleBuild, CachePolicy: CachePolicy{Mode: CacheByInputs}},
+			"example_test":  {Role: RoleTest, CachePolicy: CachePolicy{Mode: CacheWithTTL, TTL: 24 * time.Hour}},
+			"example_tag":   {Role: RolePublish, CachePolicy: CachePolicy{Mode: NeverCache}},
 		},
 	}
 
@@ -25,9 +25,9 @@ func TestGetResourceMetaFromProvider(t *testing.T) {
 		wantCache CacheMode
 		wantTTL   time.Duration
 	}{
-		{"apko_build", RoleBuild, CacheByInputs, 0},
-		{"imagetest_tests", RoleTest, CacheWithTTL, 24 * time.Hour},
-		{"oci_tags", RolePublish, NeverCache, 0},
+		{"example_build", RoleBuild, CacheByInputs, 0},
+		{"example_test", RoleTest, CacheWithTTL, 24 * time.Hour},
+		{"example_tag", RolePublish, NeverCache, 0},
 		{"unknown_resource", RoleDefault, CacheByInputs, 0}, // fallback to default
 	}
 

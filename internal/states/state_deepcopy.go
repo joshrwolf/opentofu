@@ -174,6 +174,12 @@ func (os *ResourceInstanceObjectSrc) DeepCopy() *ResourceInstanceObjectSrc {
 		copy(dependencies, os.Dependencies)
 	}
 
+	var references []addrs.ConfigResource
+	if os.References != nil {
+		references = make([]addrs.ConfigResource, len(os.References))
+		copy(references, os.References)
+	}
+
 	var identityJSON []byte
 	if os.IdentityJSON != nil {
 		identityJSON = make([]byte, len(os.IdentityJSON))
@@ -195,6 +201,7 @@ func (os *ResourceInstanceObjectSrc) DeepCopy() *ResourceInstanceObjectSrc {
 		AttrSensitivePaths:      attrPaths,
 		TransientPathValueMarks: allAttrPaths,
 		Dependencies:            dependencies,
+		References:              references,
 		CreateBeforeDestroy:     os.CreateBeforeDestroy,
 		SkipDestroy:             os.SkipDestroy,
 		Deferred:                os.Deferred,
@@ -232,12 +239,19 @@ func (o *ResourceInstanceObject) DeepCopy() *ResourceInstanceObject {
 		copy(dependencies, o.Dependencies)
 	}
 
+	var references []addrs.ConfigResource
+	if o.References != nil {
+		references = make([]addrs.ConfigResource, len(o.References))
+		copy(references, o.References)
+	}
+
 	return &ResourceInstanceObject{
 		Value:               o.Value,
 		Status:              o.Status,
 		Private:             private,
 		Identity:            o.Identity,
 		Dependencies:        dependencies,
+		References:          references,
 		CreateBeforeDestroy: o.CreateBeforeDestroy,
 		SkipDestroy:         o.SkipDestroy,
 		Deferred:            o.Deferred,

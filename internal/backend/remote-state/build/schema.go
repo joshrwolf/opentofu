@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS resource_instances (
 	sensitive_paths    BLOB,
 	private_raw        BLOB,
 	dependencies       TEXT,
+	refs               TEXT,
 	create_before_destroy INTEGER NOT NULL DEFAULT 0,
 	skip_destroy       INTEGER NOT NULL DEFAULT 0,
 	identity           BLOB,

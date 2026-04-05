@@ -179,6 +179,11 @@ type Meta struct {
 	// just trusting that someone else did it before running OpenTofu.
 	UnmanagedProviders map[addrs.Provider]*plugin.ReattachConfig
 
+	// BuiltinProviders are providers compiled into the binary that run
+	// in-process via the embedded adapter. These take precedence over
+	// cached/downloaded providers and don't require `tofu init`.
+	BuiltinProviders map[addrs.Provider]providers.Factory
+
 	// AllowExperimentalFeatures controls whether a command that embeds this
 	// Meta is permitted to make use of experimental OpenTofu features.
 	//

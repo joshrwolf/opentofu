@@ -83,6 +83,14 @@ type ResourceInstanceObjectSrc struct {
 	IdentityJSON          []byte
 	IdentitySchemaVersion *uint64
 
+	// References stores the full set of resource addresses that this instance's
+	// configuration references, including both implicit (expression) and explicit
+	// (depends_on) dependencies. Unlike Dependencies which only captures
+	// depends_on, References captures every resource address that appears in
+	// the config block's expressions. This enables graph queries (deps/rdeps)
+	// against the persisted state without re-loading the config.
+	References []addrs.ConfigResource
+
 	// ContentHash stores a hash of the fully-evaluated input configuration that
 	// produced this resource instance. Used by the build execution mode to
 	// determine whether a resource needs to be re-executed: if the current
@@ -200,6 +208,10 @@ func (os *ResourceInstanceObjectSrc) Equal(other *ResourceInstanceObjectSrc) boo
 		return false
 	}
 
+	if !equalSlicesIgnoreOrder(os.References, other.References, addrs.ConfigResource.Equal) {
+		return false
+	}
+
 	if os.ContentHash != other.ContentHash {
 		return false
 	}
@@ -269,6 +281,7 @@ func (os *ResourceInstanceObjectSrc) Decode(ty cty.Type) (*ResourceInstanceObjec
 		Value:               val,
 		Status:              os.Status,
 		Dependencies:        os.Dependencies,
+		References:          os.References,
 		Private:             os.Private,
 		Identity:            identity,
 		CreateBeforeDestroy: os.CreateBeforeDestroy,

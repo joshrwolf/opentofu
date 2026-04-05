@@ -255,7 +255,9 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 		case "lineage":
 			lineage = value
 		case "serial":
-			fmt.Sscanf(value, "%d", &serial)
+			if _, err := fmt.Sscanf(value, "%d", &serial); err != nil {
+				return nil, "", 0, fmt.Errorf("invalid serial %q: %w", value, err)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -270,7 +272,7 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 		SELECT module, mode, type, name, instance_key, deposed_key,
 		       status, provider, schema_version,
 		       attributes, attributes_flat, sensitive_paths,
-		       private_raw, dependencies,
+		       private_raw, dependencies, refs,
 		       create_before_destroy, skip_destroy,
 		       identity, identity_schema_version,
 		       content_hash, cached_at
@@ -290,7 +292,7 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 			schemaVersion                                        uint64
 			attrsRaw, attrsFlat, sensitivePaths                  []byte
 			privateRaw                                           []byte
-			depsRaw                                              sql.NullString
+			depsRaw, refsRaw                                     sql.NullString
 			cbd, skipDestroy                                     bool
 			identityRaw                                          []byte
 			identitySchemaVersion                                sql.NullInt64
@@ -301,7 +303,7 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 			&module, &mode, &resType, &name, &instanceKey, &deposedKey,
 			&status, &provider, &schemaVersion,
 			&attrsRaw, &attrsFlat, &sensitivePaths,
-			&privateRaw, &depsRaw,
+			&privateRaw, &depsRaw, &refsRaw,
 			&cbd, &skipDestroy,
 			&identityRaw, &identitySchemaVersion,
 			&contentHash, &cachedAt,
@@ -314,8 +316,7 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 			var diags tfdiags.Diagnostics
 			moduleAddr, diags = addrs.ParseModuleInstanceStr(module)
 			if diags.HasErrors() {
-				log.Printf("[WARN] build backend: skipping resource with invalid module %q: %s", module, diags.Err())
-				continue
+				return nil, "", 0, fmt.Errorf("resource %s.%s has invalid module %q: %w", resType, name, module, diags.Err())
 			}
 		}
 
@@ -326,24 +327,21 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 		case "data":
 			resMode = addrs.DataResourceMode
 		default:
-			log.Printf("[WARN] build backend: skipping resource with unknown mode %q", mode)
-			continue
+			return nil, "", 0, fmt.Errorf("resource %s.%s has unknown mode %q", resType, name, mode)
 		}
 
 		resAddr := addrs.Resource{Mode: resMode, Type: resType, Name: name}
 
 		instKey, keyErr := decodeInstanceKey(instanceKey)
 		if keyErr != nil {
-			log.Printf("[WARN] build backend: skipping resource with invalid instance key %q: %s", instanceKey, keyErr)
-			continue
+			return nil, "", 0, fmt.Errorf("resource %s has invalid instance key %q: %w", resAddr, instanceKey, keyErr)
 		}
 
 		instAddr := resAddr.Instance(instKey).Absolute(moduleAddr)
 
 		providerAddr, _, providerDiags := addrs.ParseAbsProviderConfigInstanceStr(provider)
 		if providerDiags.HasErrors() {
-			log.Printf("[WARN] build backend: skipping resource %s with invalid provider %q", instAddr, provider)
-			continue
+			return nil, "", 0, fmt.Errorf("resource %s has invalid provider %q: %w", instAddr, provider, providerDiags.Err())
 		}
 
 		obj := &states.ResourceInstanceObjectSrc{
@@ -354,27 +352,31 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 		}
 
 		if cachedAt != "" {
-			if t, parseErr := time.Parse(time.RFC3339Nano, cachedAt); parseErr == nil {
-				obj.CachedAt = t
+			t, parseErr := time.Parse(time.RFC3339Nano, cachedAt)
+			if parseErr != nil {
+				return nil, "", 0, fmt.Errorf("resource %s has invalid cached_at %q: %w", instAddr, cachedAt, parseErr)
 			}
+			obj.CachedAt = t
 		}
 
 		if len(attrsRaw) > 0 {
 			obj.AttrsJSON = attrsRaw
 		} else if len(attrsFlat) > 0 {
 			var flat map[string]string
-			if err := json.Unmarshal(attrsFlat, &flat); err == nil {
-				obj.AttrsFlat = flat
+			if err := json.Unmarshal(attrsFlat, &flat); err != nil {
+				return nil, "", 0, fmt.Errorf("resource %s has invalid attributes_flat: %w", instAddr, err)
 			}
+			obj.AttrsFlat = flat
 		} else {
 			obj.AttrsJSON = []byte("{}")
 		}
 
 		if len(sensitivePaths) > 0 {
 			paths, pathsDiags := unmarshalSensitivePaths(sensitivePaths)
-			if !pathsDiags.HasErrors() {
-				obj.AttrSensitivePaths = paths
+			if pathsDiags.HasErrors() {
+				return nil, "", 0, fmt.Errorf("resource %s has invalid sensitive_paths: %w", instAddr, pathsDiags.Err())
 			}
+			obj.AttrSensitivePaths = paths
 		}
 
 		if len(privateRaw) > 0 {
@@ -391,16 +393,32 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 
 		if depsRaw.Valid && depsRaw.String != "" {
 			var depStrs []string
-			if err := json.Unmarshal([]byte(depsRaw.String), &depStrs); err == nil {
-				deps := make([]addrs.ConfigResource, 0, len(depStrs))
-				for _, depStr := range depStrs {
-					addr, addrDiags := addrs.ParseAbsResourceStr(depStr)
-					if !addrDiags.HasErrors() {
-						deps = append(deps, addr.Config())
-					}
-				}
-				obj.Dependencies = deps
+			if err := json.Unmarshal([]byte(depsRaw.String), &depStrs); err != nil {
+				return nil, "", 0, fmt.Errorf("resource %s has invalid dependencies JSON: %w", instAddr, err)
 			}
+			deps := make([]addrs.ConfigResource, 0, len(depStrs))
+			for _, depStr := range depStrs {
+				addr, addrDiags := addrs.ParseAbsResourceStr(depStr)
+				if !addrDiags.HasErrors() {
+					deps = append(deps, addr.Config())
+				}
+			}
+			obj.Dependencies = deps
+		}
+
+		if refsRaw.Valid && refsRaw.String != "" {
+			var refStrs []string
+			if err := json.Unmarshal([]byte(refsRaw.String), &refStrs); err != nil {
+				return nil, "", 0, fmt.Errorf("resource %s has invalid refs JSON: %w", instAddr, err)
+			}
+			refs := make([]addrs.ConfigResource, 0, len(refStrs))
+			for _, refStr := range refStrs {
+				addr, addrDiags := addrs.ParseAbsResourceStr(refStr)
+				if !addrDiags.HasErrors() {
+					refs = append(refs, addr.Config())
+				}
+			}
+			obj.References = refs
 		}
 
 		switch status {
@@ -451,13 +469,11 @@ func (s *SQLiteState) loadState(ctx context.Context) (*states.State, string, uin
 		if len(valueRaw) > 0 && len(typeRaw) > 0 {
 			ty, err := ctyjson.UnmarshalType(typeRaw)
 			if err != nil {
-				log.Printf("[WARN] build backend: skipping output %q with invalid type", name)
-				continue
+				return nil, "", 0, fmt.Errorf("output %q has invalid type: %w", name, err)
 			}
 			val, err := ctyjson.Unmarshal(valueRaw, ty)
 			if err != nil {
-				log.Printf("[WARN] build backend: skipping output %q with invalid value", name)
-				continue
+				return nil, "", 0, fmt.Errorf("output %q has invalid value: %w", name, err)
 			}
 
 			rootMod := state.EnsureModule(addrs.RootModuleInstance)
@@ -519,11 +535,11 @@ func (s *SQLiteState) writeResources(ctx context.Context, tx *sql.Tx, state *sta
 			workspace, module, mode, type, name, instance_key, deposed_key,
 			status, provider, schema_version,
 			attributes, attributes_flat, sensitive_paths,
-			private_raw, dependencies,
+			private_raw, dependencies, refs,
 			create_before_destroy, skip_destroy,
 			identity, identity_schema_version,
 			content_hash, cached_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -620,6 +636,16 @@ func (s *SQLiteState) writeInstance(
 		depsJSON = sql.NullString{String: string(b), Valid: true}
 	}
 
+	var refsJSON sql.NullString
+	if len(obj.References) > 0 {
+		refStrs := make([]string, len(obj.References))
+		for i, ref := range obj.References {
+			refStrs[i] = ref.String()
+		}
+		b, _ := json.Marshal(refStrs)
+		refsJSON = sql.NullString{String: string(b), Valid: true}
+	}
+
 	var identitySchemaVersion sql.NullInt64
 	if obj.IdentitySchemaVersion != nil {
 		identitySchemaVersion = sql.NullInt64{
@@ -637,7 +663,7 @@ func (s *SQLiteState) writeInstance(
 		s.workspace, module, mode, resType, name, instanceKey, deposedKey,
 		statusStr, provider, obj.SchemaVersion,
 		obj.AttrsJSON, attrsFlat, sensitivePaths,
-		obj.Private, depsJSON,
+		obj.Private, depsJSON, refsJSON,
 		obj.CreateBeforeDestroy, obj.SkipDestroy,
 		obj.IdentityJSON, identitySchemaVersion,
 		obj.ContentHash, cachedAtStr,

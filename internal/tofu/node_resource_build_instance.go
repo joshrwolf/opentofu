@@ -102,7 +102,9 @@ func (n *NodeBuildableResourceInstance) managedResourceExecute(ctx context.Conte
 		return diags
 	}
 
-	depHashes := n.collectDependencyHashes(evalCtx)
+	refs := n.References()
+	absRefs := referencedAbsResources(refs, n.Addr.Module)
+	depHashes := n.collectDependencyHashes(evalCtx, absRefs)
 	contentHash := ComputeContentHash(resource.Type, configVal, depHashes)
 
 	state := evalCtx.State()
@@ -191,12 +193,19 @@ func (n *NodeBuildableResourceInstance) managedResourceExecute(ctx context.Conte
 	}
 
 	newObj := &states.ResourceInstanceObject{
-		Value:       newVal,
-		Private:     resp.Private,
-		Status:      newStatus,
+		Value:        newVal,
+		Private:      resp.Private,
+		Status:       newStatus,
 		Dependencies: n.Dependencies,
-		ContentHash: contentHash,
-		CachedAt:    time.Now().UTC(),
+		References: func() []addrs.ConfigResource {
+			configRefs := make([]addrs.ConfigResource, len(absRefs))
+			for i, r := range absRefs {
+				configRefs[i] = r.Config()
+			}
+			return configRefs
+		}(),
+		ContentHash:  contentHash,
+		CachedAt:     time.Now().UTC(),
 	}
 
 	if writeErr := n.writeResourceInstanceState(ctx, evalCtx, newObj, workingState); writeErr != nil {
@@ -280,23 +289,12 @@ func (n *NodeBuildableResourceInstance) dataResourceExecute(ctx context.Context,
 	return diags
 }
 
-// collectDependencyHashes reads ContentHash from all resource dependencies
-// in state. Unlike the previous implementation that only used n.Dependencies
-// (explicit depends_on), this uses References() to capture ALL config-based
-// dependencies — both implicit (expression references) and explicit.
-// This ensures that content hash cascading works correctly through the full
-// DAG: if any upstream resource re-executes, all downstream hashes change.
-func (n *NodeBuildableResourceInstance) collectDependencyHashes(evalCtx EvalContext) map[string]string {
-	hashes := make(map[string]string)
-	state := evalCtx.State()
-
-	// Collect resource addresses from all references in this node's config.
-	// This includes implicit references (e.g., aws_instance.build.id in an
-	// expression) and explicit depends_on references.
-	for _, ref := range n.References() {
-		// Extract the resource address from the reference, if it refers to
-		// a resource. References can also point to variables, locals, modules,
-		// etc. — we only care about resources for content hash cascading.
+// referencedAbsResources extracts deduplicated absolute resource addresses
+// from a set of references, resolving them against the given module instance.
+func referencedAbsResources(refs []*addrs.Reference, module addrs.ModuleInstance) []addrs.AbsResource {
+	var result []addrs.AbsResource
+	seen := map[string]bool{}
+	for _, ref := range refs {
 		var resAddr addrs.Resource
 		switch subject := ref.Subject.(type) {
 		case addrs.Resource:
@@ -306,8 +304,24 @@ func (n *NodeBuildableResourceInstance) collectDependencyHashes(evalCtx EvalCont
 		default:
 			continue
 		}
+		absRes := resAddr.Absolute(module)
+		key := absRes.String()
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, absRes)
+		}
+	}
+	return result
+}
 
-		absRes := resAddr.Absolute(n.Addr.Module)
+// collectDependencyHashes reads ContentHash from all referenced resources in
+// state. This captures both implicit (expression) and explicit (depends_on)
+// references, ensuring content hash cascading through the full DAG.
+func (n *NodeBuildableResourceInstance) collectDependencyHashes(evalCtx EvalContext, absRefs []addrs.AbsResource) map[string]string {
+	hashes := make(map[string]string)
+	state := evalCtx.State()
+
+	for _, absRes := range absRefs {
 		depResource := state.Resource(absRes)
 		if depResource == nil {
 			continue

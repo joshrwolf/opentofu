@@ -19,11 +19,13 @@ import (
 	"github.com/opentofu/svchost/svcauth"
 
 	"github.com/opentofu/opentofu/internal/addrs"
+	"github.com/opentofu/opentofu/internal/builtins"
 	"github.com/opentofu/opentofu/internal/command"
 	"github.com/opentofu/opentofu/internal/command/cliconfig"
 	"github.com/opentofu/opentofu/internal/command/views"
 	"github.com/opentofu/opentofu/internal/getmodules"
 	"github.com/opentofu/opentofu/internal/getproviders"
+	"github.com/opentofu/opentofu/internal/providers"
 	pluginDiscovery "github.com/opentofu/opentofu/internal/plugin/discovery"
 	"github.com/opentofu/opentofu/internal/terminal"
 )
@@ -117,6 +119,7 @@ func initCommands(
 		ProviderSource:       providerSrc,
 		ProviderDevOverrides: providerDevOverrides,
 		UnmanagedProviders:   unmanagedProviders,
+		BuiltinProviders:     builtinProviderFactories(),
 
 		AllowExperimentalFeatures: experimentsAreAllowed(),
 
@@ -249,6 +252,12 @@ func initCommands(
 
 		"output": func() (cli.Command, error) {
 			return &command.OutputCommand{
+				Meta: meta,
+			}, nil
+		},
+
+		"query": func() (cli.Command, error) {
+			return &command.QueryCommand{
 				Meta: meta,
 			}, nil
 		},
@@ -509,4 +518,13 @@ func getAliasCommandKeys() []string {
 		}
 	}
 	return keys
+}
+
+func builtinProviderFactories() map[addrs.Provider]providers.Factory {
+	entries := builtins.Registry()
+	factories := make(map[addrs.Provider]providers.Factory, len(entries))
+	for _, e := range entries {
+		factories[e.Source] = e.Factory
+	}
+	return factories
 }

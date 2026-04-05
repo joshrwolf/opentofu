@@ -277,6 +277,20 @@ func prepareStateV4(sV4 *stateV4) (*File, tfdiags.Diagnostics) {
 				obj.Dependencies = deps
 			}
 
+			{
+				refsRaw := isV4.References
+				refs := make([]addrs.ConfigResource, 0, len(refsRaw))
+				for _, refRaw := range refsRaw {
+					addr, addrDiags := addrs.ParseAbsResourceStr(refRaw)
+					diags = diags.Append(addrDiags)
+					if addrDiags.HasErrors() {
+						continue
+					}
+					refs = append(refs, addr.Config())
+				}
+				obj.References = refs
+			}
+
 			switch {
 			case isV4.Deposed != "":
 				dk := states.DeposedKey(isV4.Deposed)
@@ -568,6 +582,11 @@ func appendInstanceObjectStateV4(rs *states.Resource, is *states.ResourceInstanc
 		deps[i] = depAddr.String()
 	}
 
+	refs := make([]string, len(obj.References))
+	for i, refAddr := range obj.References {
+		refs[i] = refAddr.String()
+	}
+
 	var rawKey interface{}
 	switch tk := key.(type) {
 	case addrs.IntKey:
@@ -620,6 +639,7 @@ func appendInstanceObjectStateV4(rs *states.Resource, is *states.ResourceInstanc
 		AttributeSensitivePaths: attributeSensitivePaths,
 		PrivateRaw:              privateRaw,
 		Dependencies:            deps,
+		References:              refs,
 		CreateBeforeDestroy:     obj.CreateBeforeDestroy,
 		SkipDestroy:             obj.SkipDestroy,
 		Identity:                identity,
@@ -841,6 +861,7 @@ type instanceObjectStateV4 struct {
 	PrivateRaw []byte `json:"private,omitempty"`
 
 	Dependencies []string `json:"dependencies,omitempty"`
+	References   []string `json:"references,omitempty"`
 
 	CreateBeforeDestroy bool `json:"create_before_destroy,omitempty"`
 	SkipDestroy         bool `json:"skip_destroy,omitempty"`
