@@ -7,6 +7,7 @@ package states
 
 import (
 	"sort"
+	"time"
 
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
@@ -59,6 +60,14 @@ type ResourceInstanceObject struct {
 	// Deferred is meant for the ephemeral resources state information.
 	// When this is "true", the evaluator will return an unknown value.
 	Deferred bool
+
+	// ContentHash stores the content-addressed hash of the input configuration
+	// that produced this object. See ResourceInstanceObjectSrc.ContentHash.
+	ContentHash string
+
+	// CachedAt records when this object was last produced by a provider.
+	// See ResourceInstanceObjectSrc.CachedAt.
+	CachedAt time.Time
 }
 
 // ObjectStatus represents the status of a RemoteObject.
@@ -175,6 +184,8 @@ func (o *ResourceInstanceObject) Encode(ty cty.Type, schemaVersion uint64, ident
 		CreateBeforeDestroy:     o.CreateBeforeDestroy,
 		SkipDestroy:             o.SkipDestroy,
 		Deferred:                o.Deferred,
+		ContentHash:             o.ContentHash,
+		CachedAt:                o.CachedAt,
 	}, nil
 }
 

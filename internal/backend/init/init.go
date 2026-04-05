@@ -17,6 +17,7 @@ import (
 	backendLocal "github.com/opentofu/opentofu/internal/backend/local"
 	backendRemote "github.com/opentofu/opentofu/internal/backend/remote"
 	backendAzure "github.com/opentofu/opentofu/internal/backend/remote-state/azure"
+	backendBuild "github.com/opentofu/opentofu/internal/backend/remote-state/build"
 	backendConsul "github.com/opentofu/opentofu/internal/backend/remote-state/consul"
 	backendCos "github.com/opentofu/opentofu/internal/backend/remote-state/cos"
 	backendGCS "github.com/opentofu/opentofu/internal/backend/remote-state/gcs"
@@ -81,6 +82,7 @@ func Init(services *disco.Disco) {
 		"cos":        func(enc encryption.StateEncryption) backend.Backend { return backendCos.New(enc) },
 		"gcs":        func(enc encryption.StateEncryption) backend.Backend { return backendGCS.New(enc) },
 		"http":       func(enc encryption.StateEncryption) backend.Backend { return backendHTTP.New(enc) },
+		"build":     func(enc encryption.StateEncryption) backend.Backend { return backendBuild.New(enc) },
 		"inmem":      func(enc encryption.StateEncryption) backend.Backend { return backendInmem.New(enc) },
 		"kubernetes": func(enc encryption.StateEncryption) backend.Backend { return backendKubernetes.New(enc) },
 		"oss":        func(enc encryption.StateEncryption) backend.Backend { return backendOSS.New(enc) },

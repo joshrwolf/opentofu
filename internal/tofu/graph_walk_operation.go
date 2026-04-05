@@ -18,5 +18,6 @@ const (
 	walkValidate
 	walkDestroy
 	walkImport
-	walkEval // used just to prepare EvalContext for expression evaluation, with no other actions
+	walkEval  // used just to prepare EvalContext for expression evaluation, with no other actions
+	walkBuild // single-pass build execution: hash-check-then-apply, no plan phase
 )

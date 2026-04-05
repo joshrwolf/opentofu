@@ -52,6 +52,11 @@ var (
 
 func (n *nodeExpandOutput) retainDuringUnusedPruning() {}
 
+// outputValueAddr returns the output value address for this node.
+// This is used by OutputTargetTransformer to identify output nodes
+// without parsing vertex name strings.
+func (n *nodeExpandOutput) outputValueAddr() addrs.OutputValue { return n.Addr }
+
 func (n *nodeExpandOutput) temporaryValue(_ walkOperation) bool {
 	// non root outputs are temporary
 	return !n.Module.IsRoot()

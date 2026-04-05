@@ -8,6 +8,7 @@ package states
 import (
 	"bytes"
 	"reflect"
+	"time"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/legacy/hcl2shim"
@@ -81,6 +82,19 @@ type ResourceInstanceObjectSrc struct {
 	// schema versions change over time.
 	IdentityJSON          []byte
 	IdentitySchemaVersion *uint64
+
+	// ContentHash stores a hash of the fully-evaluated input configuration that
+	// produced this resource instance. Used by the build execution mode to
+	// determine whether a resource needs to be re-executed: if the current
+	// input config hashes to the same value, the cached output in state is
+	// still valid and the provider call can be skipped.
+	ContentHash string
+
+	// CachedAt records when this resource instance was last executed by a
+	// provider. Combined with a CachePolicy TTL on the resource type, this
+	// allows time-bounded cache validity (e.g. re-run tests after 24h even
+	// if inputs are unchanged).
+	CachedAt time.Time
 }
 
 // Compare two lists using an given element equal function, ignoring order and duplicates
@@ -186,6 +200,14 @@ func (os *ResourceInstanceObjectSrc) Equal(other *ResourceInstanceObjectSrc) boo
 		return false
 	}
 
+	if os.ContentHash != other.ContentHash {
+		return false
+	}
+
+	if !os.CachedAt.Equal(other.CachedAt) {
+		return false
+	}
+
 	return true
 }
 
@@ -252,6 +274,8 @@ func (os *ResourceInstanceObjectSrc) Decode(ty cty.Type) (*ResourceInstanceObjec
 		CreateBeforeDestroy: os.CreateBeforeDestroy,
 		SkipDestroy:         os.SkipDestroy,
 		Deferred:            os.Deferred,
+		ContentHash:         os.ContentHash,
+		CachedAt:            os.CachedAt,
 	}, nil
 }
 

@@ -332,6 +332,17 @@ type Operation struct {
 	// for unmatched import targets and where any generated config should be
 	// written to.
 	GenerateConfigOut string
+
+	// BuildOutputTargets is a list of root output names to target in build
+	// mode. Only the backward closure of these outputs will be executed.
+	BuildOutputTargets []string
+
+	// BuildSkipRoles causes resources with these roles to be skipped in build mode.
+	BuildSkipRoles []string
+
+	// BuildOnlyRoles, if non-empty, causes only resources with one of these
+	// roles to be executed in build mode.
+	BuildOnlyRoles []string
 }
 
 // HasConfig returns true if and only if the operation has a ConfigDir value

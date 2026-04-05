@@ -200,6 +200,8 @@ func (os *ResourceInstanceObjectSrc) DeepCopy() *ResourceInstanceObjectSrc {
 		Deferred:                os.Deferred,
 		IdentityJSON:            identityJSON,
 		IdentitySchemaVersion:   identitySchemaVersion,
+		ContentHash:             os.ContentHash,
+		CachedAt:                os.CachedAt,
 	}
 }
 
@@ -239,6 +241,8 @@ func (o *ResourceInstanceObject) DeepCopy() *ResourceInstanceObject {
 		CreateBeforeDestroy: o.CreateBeforeDestroy,
 		SkipDestroy:         o.SkipDestroy,
 		Deferred:            o.Deferred,
+		ContentHash:         o.ContentHash,
+		CachedAt:            o.CachedAt,
 	}
 }
 

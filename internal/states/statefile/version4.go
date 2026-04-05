@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"time"
 
 	version "github.com/hashicorp/go-version"
 	"github.com/zclconf/go-cty/cty"
@@ -183,6 +184,12 @@ func prepareStateV4(sV4 *stateV4) (*File, tfdiags.Diagnostics) {
 				SchemaVersion:       isV4.SchemaVersion,
 				CreateBeforeDestroy: isV4.CreateBeforeDestroy,
 				SkipDestroy:         isV4.SkipDestroy,
+				ContentHash:         isV4.ContentHash,
+			}
+			if isV4.CachedAt != "" {
+				if t, err := time.Parse(time.RFC3339Nano, isV4.CachedAt); err == nil {
+					obj.CachedAt = t
+				}
 			}
 
 			{
@@ -597,6 +604,11 @@ func appendInstanceObjectStateV4(rs *states.Resource, is *states.ResourceInstanc
 		identity = obj.IdentityJSON
 	}
 
+	var cachedAt string
+	if !obj.CachedAt.IsZero() {
+		cachedAt = obj.CachedAt.Format(time.RFC3339Nano)
+	}
+
 	return append(isV4s, instanceObjectStateV4{
 		IndexKey:                rawKey,
 		Deposed:                 string(deposed),
@@ -612,6 +624,8 @@ func appendInstanceObjectStateV4(rs *states.Resource, is *states.ResourceInstanc
 		SkipDestroy:             obj.SkipDestroy,
 		Identity:                identity,
 		IdentitySchemaVersion:   obj.IdentitySchemaVersion,
+		ContentHash:             obj.ContentHash,
+		CachedAt:                cachedAt,
 	}), diags
 }
 
@@ -833,6 +847,9 @@ type instanceObjectStateV4 struct {
 
 	Identity              json.RawMessage `json:"identity,omitempty"`
 	IdentitySchemaVersion *uint64         `json:"identity_schema_version,omitempty"`
+
+	ContentHash string `json:"content_hash,omitempty"`
+	CachedAt    string `json:"cached_at,omitempty"`
 }
 
 type checkResultsV4 struct {
