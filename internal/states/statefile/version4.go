@@ -210,7 +210,7 @@ func prepareStateV4(sV4 *stateV4) (*File, tfdiags.Diagnostics) {
 
 			// Sensitive paths
 			if isV4.AttributeSensitivePaths != nil {
-				paths, pathsDiags := unmarshalPaths([]byte(isV4.AttributeSensitivePaths))
+				paths, pathsDiags := UnmarshalPaths([]byte(isV4.AttributeSensitivePaths))
 				diags = diags.Append(pathsDiags)
 				if pathsDiags.HasErrors() {
 					continue
@@ -596,7 +596,7 @@ func appendInstanceObjectStateV4(rs *states.Resource, is *states.ResourceInstanc
 	}
 
 	// Marshal paths to JSON
-	attributeSensitivePaths, pathsDiags := marshalPaths(paths)
+	attributeSensitivePaths, pathsDiags := MarshalPaths(paths)
 	diags = diags.Append(pathsDiags)
 
 	var identity json.RawMessage
@@ -940,7 +940,9 @@ const (
 	getAttrPathStepType = "get_attr"
 )
 
-func unmarshalPaths(buf []byte) ([]cty.Path, tfdiags.Diagnostics) {
+// UnmarshalPaths parses a JSON-encoded array of path steps (the format used
+// in state V4 for sensitive_attributes) into cty.Path values.
+func UnmarshalPaths(buf []byte) ([]cty.Path, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	var jsonPaths [][]pathStep
 
@@ -997,7 +999,9 @@ unmarshalOuter:
 	return paths, diags
 }
 
-func marshalPaths(paths []cty.Path) ([]byte, tfdiags.Diagnostics) {
+// MarshalPaths serializes cty.Path values into the JSON format used in
+// state V4 for sensitive_attributes.
+func MarshalPaths(paths []cty.Path) ([]byte, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	// cty.Path is a slice of cty.PathSteps, so our representation of a slice

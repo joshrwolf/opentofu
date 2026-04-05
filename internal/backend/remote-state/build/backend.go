@@ -1,31 +1,33 @@
 // Copyright (c) The OpenTofu Authors
 // SPDX-License-Identifier: MPL-2.0
 
-// Package build implements a backend for the build execution mode.
+// Package build implements a SQLite-backed state backend for the build
+// execution mode.
 //
-// Unlike the standard local backend which stores a single state file per
-// workspace, the build backend stores state per module path. This allows
-// each component (e.g., images/nginx, images/go) to have independent state
-// that persists between builds, enabling content-hash-based caching.
+// Unlike the standard local backend which stores a monolithic JSON state file
+// per workspace, the build backend stores each resource instance as an
+// individual row in a SQLite database. This eliminates the O(N)
+// serialize/deserialize bottleneck that makes the local backend pathologically
+// slow at scale (17k+ resources).
 //
-// State is stored under a configurable directory (default: .buildtofu/state/)
-// with the module path as the subdirectory structure:
+// Key properties:
+//   - WAL mode for concurrent readers/writers across processes
+//   - Per-resource-instance row storage (no monolithic JSON)
+//   - Incremental writes (only changed resources are persisted)
+//   - Cooperative locking via database rows
+//   - Single file: .chofu/state.db (plus WAL/SHM files managed by SQLite)
 //
-//	.buildtofu/state/
-//	  images/nginx/state.json
-//	  images/go/state.json
-//	  charts/ingress-nginx/state.json
-//
-// The build backend does not support workspaces — each module path IS
-// effectively a workspace. It does not support remote state, locking (it's
-// designed for single-user build systems), or encryption.
+// State is stored at a configurable path (default: .chofu/state.db).
 package build
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	_ "modernc.org/sqlite" // SQLite driver
 
 	"github.com/opentofu/opentofu/internal/backend"
 	"github.com/opentofu/opentofu/internal/encryption"
@@ -40,7 +42,7 @@ func New(enc encryption.StateEncryption) backend.Backend {
 			"path": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "Directory where per-module state files are stored. Defaults to .buildtofu/state/ in the working directory.",
+				Description: "Path to the SQLite database file. Defaults to .chofu/state.db in the working directory.",
 				Default:     "",
 			},
 		},
@@ -50,74 +52,111 @@ func New(enc encryption.StateEncryption) backend.Backend {
 	return b
 }
 
-// Backend implements the build-system state backend. State is stored
-// on the local filesystem, one state file per module path.
+// BuildBackend is the marker interface that identifies a backend as suitable
+// for use with the `tofu build` command. The build command checks for this
+// interface and rejects backends that don't implement it.
+type BuildBackend interface {
+	IsBuildBackend()
+}
+
+// Backend implements the build-system state backend backed by SQLite.
 type Backend struct {
 	*schema.Backend
 	encryption encryption.StateEncryption
 
-	// stateDir is the root directory for state files.
-	stateDir string
+	dbPath string
+	db     *sql.DB
 }
+
+// IsBuildBackend marks this backend as suitable for `tofu build`.
+func (b *Backend) IsBuildBackend() {}
 
 func (b *Backend) configure(ctx context.Context) error {
 	data := schema.FromContextBackendConfig(ctx)
 
-	stateDir := data.Get("path").(string)
-	if stateDir == "" {
-		stateDir = ".buildtofu/state"
+	dbPath := data.Get("path").(string)
+	if dbPath == "" {
+		dbPath = ".chofu/state.db"
 	}
 
-	// Resolve relative to working directory
-	if !filepath.IsAbs(stateDir) {
+	if !filepath.IsAbs(dbPath) {
 		wd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to get working directory: %w", err)
 		}
-		stateDir = filepath.Join(wd, stateDir)
+		dbPath = filepath.Join(wd, dbPath)
 	}
 
-	b.stateDir = stateDir
-	return nil
+	b.dbPath = dbPath
+
+	db, err := openDB(dbPath)
+	if err != nil {
+		return err
+	}
+	b.db = db
+
+	return initDB(ctx, db)
 }
 
-// Workspaces returns the default workspace only. The build backend uses
-// module paths as the state key, not workspaces.
-func (b *Backend) Workspaces(context.Context) ([]string, error) {
+// openDB opens a SQLite database at the given path with performance PRAGMAs
+// configured via the DSN. Creates parent directories as needed.
+func openDB(path string) (*sql.DB, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating state directory %s: %w", dir, err)
+	}
+
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=synchronous(normal)&_pragma=cache_size(-64000)&_pragma=foreign_keys(on)", path)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening sqlite database %s: %w", path, err)
+	}
+
+	// SQLite supports only one writer at a time. A single connection avoids
+	// SQLITE_BUSY errors within the process; cross-process contention is
+	// handled by the busy_timeout pragma.
+	db.SetMaxOpenConns(1)
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("pinging sqlite database %s: %w", path, err)
+	}
+
+	return db, nil
+}
+
+// Workspaces returns the list of known workspaces. The build backend always
+// has at least the default workspace.
+func (b *Backend) Workspaces(_ context.Context) ([]string, error) {
+	// For now, only default. Future: query distinct workspaces from metadata.
 	return []string{backend.DefaultStateName}, nil
 }
 
 // DeleteWorkspace is not supported by the build backend.
 func (b *Backend) DeleteWorkspace(_ context.Context, name string, _ bool) error {
 	if name == backend.DefaultStateName {
-		return fmt.Errorf("can't delete default state")
+		return fmt.Errorf("cannot delete default state")
 	}
-	return fmt.Errorf("the build backend does not support workspaces")
+	return fmt.Errorf("the build backend does not support workspace deletion")
 }
 
-// StateMgr returns a filesystem-based state manager for the given name.
-//
-// In the build backend, the "name" is expected to be the module path
-// (e.g., "images/nginx"). The state is stored at:
-//
-//	<stateDir>/<name>/state.json
-//
-// For the default workspace name, state is stored at:
-//
-//	<stateDir>/state.json
+// StateMgr returns a SQLite-backed state manager for the given workspace.
 func (b *Backend) StateMgr(_ context.Context, name string) (statemgr.Full, error) {
-	var statePath string
-	if name == backend.DefaultStateName {
-		statePath = filepath.Join(b.stateDir, "state.json")
-	} else {
-		statePath = filepath.Join(b.stateDir, name, "state.json")
+	if b.db == nil {
+		return nil, fmt.Errorf("backend not configured (call Configure first)")
 	}
 
-	// Ensure the directory exists
-	dir := filepath.Dir(statePath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create state directory %s: %w", dir, err)
-	}
+	return &SQLiteState{
+		db:        b.db,
+		workspace: name,
+	}, nil
+}
 
-	return statemgr.NewFilesystem(statePath, b.encryption), nil
+// Close closes the database connection. Should be called when the backend
+// is no longer needed.
+func (b *Backend) Close() error {
+	if b.db != nil {
+		return b.db.Close()
+	}
+	return nil
 }

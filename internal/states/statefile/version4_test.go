@@ -49,7 +49,7 @@ func TestVersion4_sort(t *testing.T) {
 	}
 }
 
-func TestVersion4_unmarshalPaths(t *testing.T) {
+func TestVersion4_UnmarshalPaths(t *testing.T) {
 	testCases := map[string]struct {
 		json  string
 		paths []cty.Path
@@ -194,7 +194,7 @@ func TestVersion4_unmarshalPaths(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			paths, diags := unmarshalPaths([]byte(tc.json))
+			paths, diags := UnmarshalPaths([]byte(tc.json))
 
 			if len(tc.diags) == 0 {
 				if len(diags) != 0 {
@@ -224,7 +224,7 @@ func TestVersion4_unmarshalPaths(t *testing.T) {
 	}
 }
 
-func TestVersion4_marshalPaths(t *testing.T) {
+func TestVersion4_MarshalPaths(t *testing.T) {
 	testCases := map[string]struct {
 		paths []cty.Path
 		json  string
@@ -249,7 +249,7 @@ func TestVersion4_marshalPaths(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			json, diags := marshalPaths(tc.paths)
+			json, diags := MarshalPaths(tc.paths)
 
 			if len(diags) != 0 {
 				t.Fatalf("expected no diags, got: %#v", diags)

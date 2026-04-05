@@ -9,6 +9,8 @@ import (
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/backend"
+	backendLocal "github.com/opentofu/opentofu/internal/backend/local"
+	backendBuild "github.com/opentofu/opentofu/internal/backend/remote-state/build"
 	"github.com/opentofu/opentofu/internal/command/arguments"
 	"github.com/opentofu/opentofu/internal/command/flags"
 	"github.com/opentofu/opentofu/internal/command/views"
@@ -81,6 +83,27 @@ func (c *BuildCommand) Run(rawArgs []string) int {
 		return 1
 	}
 
+	// Verify the backend is suitable for build mode. The build command
+	// requires the "build" backend for proper content-hash caching. Using
+	// other backends (inmem, local, s3, etc.) would either discard state
+	// between runs or be pathologically slow at scale.
+	// Skip this check when running under test with testingOverrides.
+	if c.testingOverrides == nil && !isBuildBackend(be) {
+		diags = diags.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Unsupported backend for build mode",
+			`The "tofu build" command requires the "build" backend. Configure it in your terraform block:
+
+  terraform {
+    backend "build" {}
+  }
+
+The build backend uses SQLite for fast, persistent state storage that scales to large DAGs.`,
+		))
+		view.Diagnostics(diags)
+		return 1
+	}
+
 	opReq := c.Operation(ctx, be, view.Backend(), enc)
 	opReq.Type = backend.OperationTypeBuild
 	opReq.AutoApprove = true
@@ -138,6 +161,17 @@ func splitComma(s string) []string {
 		}
 	}
 	return parts
+}
+
+// isBuildBackend checks whether the enhanced backend wraps a build backend.
+// The local backend wraps non-enhanced backends (like "build") to provide
+// the Enhanced interface, so we check the inner backend.
+func isBuildBackend(be backend.Enhanced) bool {
+	if local, ok := be.(*backendLocal.Local); ok {
+		_, ok = local.Backend.(backendBuild.BuildBackend)
+		return ok
+	}
+	return false
 }
 
 func (c *BuildCommand) Help() string {
