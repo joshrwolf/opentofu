@@ -55,9 +55,54 @@ func (p *Parser) LoadConfigDir(path string, call StaticModuleCall) (*Module, hcl
 	return p.LoadConfigDirSelective(path, call, SelectiveLoadAll)
 }
 func (p *Parser) LoadConfigDirSelective(path string, call StaticModuleCall, load SelectiveLoader) (*Module, hcl.Diagnostics) {
-	primaryPaths, overridePaths, _, diags := p.dirFiles(path, "")
-	if diags.HasErrors() {
+	primary, override, diags := p.loadDirFilesCached(path)
+	// loadDirFilesCached returns nil files only when the directory itself
+	// cannot be read (dirFiles error). Parse errors from individual files
+	// are accumulated in diags but files are still present — continue to
+	// NewModule to match the behavior of the uncached path.
+	if primary == nil && override == nil && diags.HasErrors() {
 		return nil, diags
+	}
+
+	mod, modDiags := NewModule(primary, override, call, path, load)
+	diags = append(diags, modDiags...)
+
+	diags = finalizeModuleLoadDiagnostics(diags)
+	return mod, diags
+}
+
+// loadDirFilesCached returns parsed config files for the given directory,
+// using a per-directory cache to avoid redundant HCL parsing and config
+// decoding when the same source directory is loaded multiple times.
+//
+// The returned []*File slices are always fresh clones — safe for mutation
+// by NewModule/appendFile/mergeFile. The cached templates are never exposed.
+func (p *Parser) loadDirFilesCached(dir string) ([]*File, []*File, hcl.Diagnostics) {
+	// Clean normalizes without syscalls (unlike filepath.Abs which calls
+	// os.Getwd on every relative path — 3s of CPU for 31k module loads).
+	cacheKey := filepath.Clean(dir)
+
+	// Fast path: read lock.
+	p.dirCacheMu.RLock()
+	entry, ok := p.dirCache[cacheKey]
+	p.dirCacheMu.RUnlock()
+	if ok {
+		// Clone diags so the caller's append doesn't write into the cached slice.
+		return cloneFiles(entry.primary), cloneFiles(entry.override), slices.Clone(entry.diags)
+	}
+
+	// Slow path: parse, cache, return clones.
+	p.dirCacheMu.Lock()
+	defer p.dirCacheMu.Unlock()
+
+	// Double-check after acquiring write lock.
+	if entry, ok = p.dirCache[cacheKey]; ok {
+		return cloneFiles(entry.primary), cloneFiles(entry.override), slices.Clone(entry.diags)
+	}
+
+	primaryPaths, overridePaths, _, diags := p.dirFiles(dir, "")
+	if diags.HasErrors() {
+		return nil, nil, diags
 	}
 
 	primary, fDiags := p.loadFiles(primaryPaths, false)
@@ -65,11 +110,16 @@ func (p *Parser) LoadConfigDirSelective(path string, call StaticModuleCall, load
 	override, fDiags := p.loadFiles(overridePaths, true)
 	diags = append(diags, fDiags...)
 
-	mod, modDiags := NewModule(primary, override, call, path, load)
-	diags = append(diags, modDiags...)
+	if p.dirCache == nil {
+		p.dirCache = make(map[string]*dirCacheEntry)
+	}
+	p.dirCache[cacheKey] = &dirCacheEntry{
+		primary:  primary,
+		override: override,
+		diags:    diags,
+	}
 
-	diags = finalizeModuleLoadDiagnostics(diags)
-	return mod, diags
+	return cloneFiles(primary), cloneFiles(override), diags
 }
 
 // LoadConfigDirUneval is a variant of [Parser.LoadConfigDir] that only performs
@@ -124,14 +174,14 @@ func (p *Parser) LoadConfigDirWithTests(path string, testDirectory string, call 
 //
 // If the given directory does not exist or cannot be read, error diagnostics
 // are returned. If errors are returned, the resulting lists may be incomplete.
-func (p Parser) ConfigDirFiles(dir string) (primary, override []string, diags hcl.Diagnostics) {
+func (p *Parser) ConfigDirFiles(dir string) (primary, override []string, diags hcl.Diagnostics) {
 	primary, override, _, diags = p.dirFiles(dir, "")
 	return primary, override, diags
 }
 
 // ConfigDirFilesWithTests matches ConfigDirFiles except it also returns the
 // paths to any test files within the module.
-func (p Parser) ConfigDirFilesWithTests(dir string, testDirectory string) (primary, override, tests []string, diags hcl.Diagnostics) {
+func (p *Parser) ConfigDirFilesWithTests(dir string, testDirectory string) (primary, override, tests []string, diags hcl.Diagnostics) {
 	return p.dirFiles(dir, testDirectory)
 }
 

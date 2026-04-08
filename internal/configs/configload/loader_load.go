@@ -30,6 +30,29 @@ func (l *Loader) LoadConfig(ctx context.Context, rootDir string, call configs.St
 	return l.loadConfig(ctx, config, diags)
 }
 
+// LoadConfigWithWalker is like LoadConfig but allows the caller to wrap the
+// module walker before the config tree is built. This enables target-aware
+// loading: the wrap function can inspect each ModuleRequest and skip
+// irrelevant subtrees by returning nil.
+//
+// If wrap is nil, the behavior is identical to LoadConfig.
+func (l *Loader) LoadConfigWithWalker(ctx context.Context, rootDir string, call configs.StaticModuleCall, wrap func(configs.ModuleWalker) configs.ModuleWalker) (*configs.Config, hcl.Diagnostics) {
+	rootMod, diags := l.parser.LoadConfigDir(rootDir, call)
+	if rootMod == nil || diags.HasErrors() {
+		cfg := &configs.Config{Module: rootMod}
+		return cfg, diags
+	}
+
+	walker := configs.ModuleWalker(configs.ModuleWalkerFunc(l.moduleWalkerLoad))
+	if wrap != nil {
+		walker = wrap(walker)
+	}
+
+	cfg, cDiags := configs.BuildConfig(ctx, rootMod, walker)
+	diags = append(diags, cDiags...)
+	return cfg, diags
+}
+
 // LoadConfigWithTests matches LoadConfig, except the configs.Config contains
 // any relevant .tftest.hcl files.
 func (l *Loader) LoadConfigWithTests(ctx context.Context, rootDir string, testDir string, call configs.StaticModuleCall) (*configs.Config, hcl.Diagnostics) {

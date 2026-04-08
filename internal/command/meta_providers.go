@@ -19,6 +19,7 @@ import (
 	plugin "github.com/hashicorp/go-plugin"
 
 	"github.com/opentofu/opentofu/internal/addrs"
+	chofuProvider "github.com/opentofu/opentofu/internal/builtin/providers/chofu"
 	terraformProvider "github.com/opentofu/opentofu/internal/builtin/providers/tf"
 	"github.com/opentofu/opentofu/internal/getproviders"
 	"github.com/opentofu/opentofu/internal/logging"
@@ -340,6 +341,9 @@ func (m *Meta) internalProviders() map[string]providers.Factory {
 	return map[string]providers.Factory{
 		"terraform": func() (providers.Interface, error) {
 			return terraformProvider.NewProvider(), nil
+		},
+		"chofu": func() (providers.Interface, error) {
+			return chofuProvider.NewProvider(), nil
 		},
 	}
 }

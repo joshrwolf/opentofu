@@ -8,6 +8,7 @@ package configs
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
@@ -22,6 +23,22 @@ import (
 type Parser struct {
 	fs afero.Afero
 	p  *hclparse.Parser
+
+	// dirCache caches parsed []*File per directory path, keyed by absolute
+	// path. When the same source directory is loaded multiple times (common
+	// with shared module sources like tflib/publisher), subsequent loads
+	// skip HCL parsing and config decoding entirely — only a cheap struct
+	// clone is needed so that NewModule's mutations don't affect the template.
+	dirCacheMu sync.RWMutex
+	dirCache   map[string]*dirCacheEntry
+}
+
+// dirCacheEntry stores template Files for a directory. The slices are
+// never passed to NewModule directly — callers always receive clones.
+type dirCacheEntry struct {
+	primary  []*File
+	override []*File
+	diags    hcl.Diagnostics // parse-time diagnostics to replay
 }
 
 // NewParser creates and returns a new Parser that reads files from the given

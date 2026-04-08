@@ -16,6 +16,7 @@ import (
 	"github.com/opentofu/opentofu/internal/lang"
 	"github.com/opentofu/opentofu/internal/lang/marks"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
 )
 
 // StaticIdentifier holds a Referenceable item and where it was declared
@@ -81,6 +82,11 @@ func RootModuleCallForTesting() StaticModuleCall {
 type StaticEvaluator struct {
 	call StaticModuleCall
 	cfg  *Module
+
+	// SharedFuncs, if non-nil, is passed through to every lang.Scope created
+	// by this evaluator. It avoids rebuilding the ~270-entry function table
+	// on every Evaluate call. The map must be treated as read-only.
+	SharedFuncs map[string]function.Function
 }
 
 // Creates a static evaluator based from the given module and module call

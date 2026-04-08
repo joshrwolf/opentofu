@@ -60,6 +60,12 @@ type Scope struct {
 	funcsLock sync.Mutex
 	funcs     map[string]function.Function
 
+	// SharedFuncs, if non-nil, is returned directly by Functions() without
+	// building a new function table. The map must be treated as read-only.
+	// Use this when many Scopes share the same BaseDir and settings to
+	// avoid redundant function table construction.
+	SharedFuncs map[string]function.Function
+
 	// activeExperiments is an optional set of experiments that should be
 	// considered as active in the module that this scope will be used for.
 	// Callers can populate it by calling the SetActiveExperiments method.

@@ -12,11 +12,12 @@ func _() {
 	_ = x[OperationTypeRefresh-1]
 	_ = x[OperationTypePlan-2]
 	_ = x[OperationTypeApply-3]
+	_ = x[OperationTypeBuild-4]
 }
 
-const _OperationType_name = "OperationTypeInvalidOperationTypeRefreshOperationTypePlanOperationTypeApply"
+const _OperationType_name = "OperationTypeInvalidOperationTypeRefreshOperationTypePlanOperationTypeApplyOperationTypeBuild"
 
-var _OperationType_index = [...]uint8{0, 20, 40, 57, 75}
+var _OperationType_index = [...]uint8{0, 20, 40, 57, 75, 93}
 
 func (i OperationType) String() string {
 	idx := int(i) - 0

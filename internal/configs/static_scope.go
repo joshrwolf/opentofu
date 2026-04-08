@@ -28,6 +28,7 @@ func newStaticScope(eval *StaticEvaluator, stack0 StaticIdentifier, stack ...Sta
 		Data:        staticScopeData{eval, append([]StaticIdentifier{stack0}, stack...)},
 		ParseRef:    addrs.ParseRef,
 		BaseDir:     ".", // Always current working directory for now. (same as Evaluator.Scope())
+		SharedFuncs: eval.SharedFuncs,
 		PureOnly:    false,
 		ConsoleMode: false,
 	}

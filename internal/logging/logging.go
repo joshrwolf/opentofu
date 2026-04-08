@@ -40,15 +40,25 @@ var (
 	// logWriter is a global writer for logs, to be used with the std log package
 	logWriter io.Writer
 
+	// logOutput is the original output destination set during init.
+	// Saved so SuppressOutput can restore it correctly (may be a file
+	// if TF_LOG_PATH is set, not necessarily os.Stderr).
+	logOutput io.Writer
+
 	// initialize our cache of panic output from providers
 	panics = &panicRecorder{
 		panics:   make(map[string][]string),
 		maxLines: 100,
 	}
+
+	// providerLevelOverride, when non-nil, forces NewProviderLogger to use
+	// this level instead of reading TF_LOG_PROVIDER / TF_LOG env vars.
+	// Set via OverrideProviderLogLevel, cleared via ClearProviderLogLevel.
+	providerLevelOverride *hclog.Level
 )
 
 func init() {
-	logger = newHCLogger("")
+	logger, logOutput = newHCLogger("")
 	logWriter = logger.StandardWriter(&hclog.StandardLoggerOptions{InferLevels: true})
 
 	// set up the default std library logger to use our output
@@ -84,9 +94,11 @@ func HCLogger() hclog.Logger {
 	return logger
 }
 
-// newHCLogger returns a new hclog.Logger instance with the given name
-func newHCLogger(name string) hclog.Logger {
-	logOutput := io.Writer(os.Stderr)
+// newHCLogger returns a new hclog.Logger and the output writer it was
+// configured with. The writer is returned so callers can save and restore
+// it (e.g., SuppressOutput).
+func newHCLogger(name string) (hclog.Logger, io.Writer) {
+	output := io.Writer(os.Stderr)
 	logLevel, json := globalLogLevel()
 
 	if logPath := os.Getenv(envLogFile); logPath != "" {
@@ -94,17 +106,17 @@ func newHCLogger(name string) hclog.Logger {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening log file: %v\n", err)
 		} else {
-			logOutput = f
+			output = f
 		}
 	}
 
 	return hclog.NewInterceptLogger(&hclog.LoggerOptions{
 		Name:              name,
 		Level:             logLevel,
-		Output:            logOutput,
+		Output:            output,
 		IndependentLevels: true,
 		JSONFormat:        json,
-	})
+	}), output
 }
 
 // NewLogger returns a new logger based in the current global logger, with the
@@ -153,6 +165,9 @@ func CurrentLogLevel() string {
 }
 
 func providerLogLevel() hclog.Level {
+	if providerLevelOverride != nil {
+		return *providerLevelOverride
+	}
 	providerEnvLevel := strings.ToUpper(os.Getenv(envLogProvider))
 	if providerEnvLevel == "" {
 		providerEnvLevel = strings.ToUpper(os.Getenv(envLog))
@@ -215,6 +230,64 @@ func isValidLogLevel(level string) bool {
 	}
 
 	return false
+}
+
+// RegisterSinkAdapter attaches a custom hclog.SinkAdapter to the global
+// InterceptLogger. All log entries that pass the level filter are forwarded
+// to the sink's Accept method. Call DeregisterSinkAdapter to remove it.
+//
+// This is used by the build UI to capture provider log output in real time
+// without modifying the provider plugin setup.
+func RegisterSinkAdapter(sink hclog.SinkAdapter) {
+	l, ok := logger.(hclog.InterceptLogger)
+	if !ok {
+		return
+	}
+	l.RegisterSink(sink)
+}
+
+// DeregisterSinkAdapter removes a previously registered sink.
+func DeregisterSinkAdapter(sink hclog.SinkAdapter) {
+	l, ok := logger.(hclog.InterceptLogger)
+	if !ok {
+		return
+	}
+	l.DeregisterSink(sink)
+}
+
+// OverrideProviderLogLevel forces all future NewProviderLogger calls to use
+// the given level, regardless of TF_LOG_PROVIDER / TF_LOG env vars. This is
+// used by the build UI to enable provider log capture without requiring the
+// user to set environment variables.
+func OverrideProviderLogLevel(level hclog.Level) {
+	providerLevelOverride = &level
+}
+
+// ClearProviderLogLevel removes the override set by OverrideProviderLogLevel,
+// restoring the default env-var-based behavior.
+func ClearProviderLogLevel() {
+	providerLevelOverride = nil
+}
+
+// SuppressOutput redirects the global logger's underlying output to
+// io.Discard. Registered sinks continue to receive all log entries — only
+// the stderr (or file) output is silenced. Returns a function that restores
+// the original output. This is used during TUI builds to prevent raw hclog
+// lines from corrupting the terminal.
+func SuppressOutput() func() {
+	or, ok := logger.(hclog.OutputResettable)
+	if !ok {
+		return func() {}
+	}
+	saved := logOutput
+	or.ResetOutput(&hclog.LoggerOptions{
+		Output: io.Discard,
+	})
+	return func() {
+		or.ResetOutput(&hclog.LoggerOptions{
+			Output: saved,
+		})
+	}
 }
 
 // PluginOutputMonitor creates an io.Writer that will warn about any writes in

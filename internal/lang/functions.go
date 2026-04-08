@@ -28,6 +28,9 @@ var impureFunctions = []string{
 // Functions returns the set of functions that should be used to when evaluating
 // expressions in the receiving scope.
 func (s *Scope) Functions() map[string]function.Function {
+	if s.SharedFuncs != nil {
+		return s.SharedFuncs
+	}
 	s.funcsLock.Lock()
 	if s.funcs == nil {
 		s.funcs = makeBaseFunctionTable(s.BaseDir)

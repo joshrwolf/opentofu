@@ -20,6 +20,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/opentofu/opentofu/internal/addrs"
+	"github.com/opentofu/opentofu/internal/chofu"
 	"github.com/opentofu/opentofu/internal/command/clistate"
 	"github.com/opentofu/opentofu/internal/command/views"
 	"github.com/opentofu/opentofu/internal/configs"
@@ -309,6 +310,10 @@ type Operation struct {
 	// This flag is honored only if PlanFile isn't set. If PlanFile is set then
 	// the variables set in the plan are used instead, and they must be valid.
 	AllowUnsetVariables bool
+
+	// BuildUI receives structured build events for rendering. Only used
+	// by the build operation; nil for plan/apply/destroy.
+	BuildUI chofu.BuildUI
 
 	// View implements the logic for all UI interactions.
 	View views.Operation

@@ -16,4 +16,5 @@ const (
 	OperationTypeRefresh
 	OperationTypePlan
 	OperationTypeApply
+	OperationTypeBuild
 )

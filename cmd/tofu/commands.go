@@ -133,6 +133,12 @@ func initCommands(
 			}, nil
 		},
 
+		"build": func() (cli.Command, error) {
+			return &command.BuildCommand{
+				Meta: meta,
+			}, nil
+		},
+
 		"console": func() (cli.Command, error) {
 			return &command.ConsoleCommand{
 				Meta: meta,

@@ -341,12 +341,12 @@ func (s *Scope) evalContext(ctx context.Context, parent *hcl.EvalContext, refs [
 	// Calling NewChild() on a nil parent will
 	// produce an EvalContext with no parent.
 	hclCtx := parent.NewChild()
-	hclCtx.Functions = make(map[string]function.Function)
 	hclCtx.Variables = make(map[string]cty.Value)
 
-	// The built-in functions are our starting point, but we might add extra
-	// provider-defined functions below.
-	maps.Copy(hclCtx.Functions, s.Functions())
+	// Start with a shared reference to the function table. This avoids
+	// copying ~270 entries per expression eval. We only allocate a private
+	// copy if a provider function needs injection (copy-on-write).
+	hclCtx.Functions = s.Functions()
 
 	// Easy path for common case where there are no references at all.
 	if len(refs) == 0 {
@@ -371,6 +371,7 @@ func (s *Scope) evalContext(ctx context.Context, parent *hcl.EvalContext, refs [
 	// warnings, but once we've gathered all the data we'll then skip anything
 	// that's redundant in the process of populating our values map.
 	varBuilder := s.newEvalVarBuilder()
+	funcsCopied := false
 
 	for _, ref := range refs {
 		if ref.Subject == addrs.Self {
@@ -379,6 +380,13 @@ func (s *Scope) evalContext(ctx context.Context, parent *hcl.EvalContext, refs [
 		}
 
 		if subj, ok := ref.Subject.(addrs.ProviderFunction); ok {
+			// Copy-on-write: we need a mutable map to inject provider functions.
+			if !funcsCopied {
+				funcs := make(map[string]function.Function, len(hclCtx.Functions)+4)
+				maps.Copy(funcs, hclCtx.Functions)
+				hclCtx.Functions = funcs
+				funcsCopied = true
+			}
 			// Inject function directly into context
 			if _, ok := hclCtx.Functions[subj.String()]; !ok {
 				fn, fnDiags := s.ProviderFunctions(ctx, subj, ref.SourceRange)
