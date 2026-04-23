@@ -6,6 +6,7 @@
 package configs
 
 import (
+	"context"
 	"os"
 	"runtime"
 	"strings"
@@ -392,7 +393,7 @@ variable "path" {
 		files[fn] = file
 	}
 
-	call := NewStaticModuleCall(nil, hcl.Range{}, func(v *Variable) (cty.Value, hcl.Diagnostics) {
+	call := NewStaticModuleCall(nil, hcl.Range{}, func(_ context.Context, v *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 		return v.Default, nil
 	}, "<testing>", "")
 

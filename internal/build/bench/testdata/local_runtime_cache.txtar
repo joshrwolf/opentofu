@@ -1,0 +1,112 @@
+Locals that reference variables whose values come from runtime module outputs
+must not return stale cached values. The evalCache caches "pure" locals
+(those that only reference var.*, path.*, etc.) after the first static
+evaluation. When the solver later re-evaluates with a runtime resolver
+(after build actions complete), the cache must not serve the stale static
+result — otherwise the local stays unknown and downstream targets cannot
+be lowered.
+
+This test reproduces the pattern from images-private where:
+  module.sandbox builds an image (apko_build equivalent)
+  module.runner takes the sandbox output through a variable, wraps it in
+    a local, and feeds the local into a resource config
+
+-- providers.tf --
+terraform {
+  required_providers {
+    test = { source = "hashicorp/test" }
+  }
+}
+
+provider "test" {}
+
+-- main.tf --
+module "sandbox" {
+  source = "./sandbox"
+}
+
+module "runner" {
+  source = "./runner"
+  sandbox_image = module.sandbox.image_ref
+  target_images = { app = module.sandbox.image_ref }
+}
+
+output "result" {
+  value = module.runner.result
+}
+
+-- sandbox/main.tf --
+terraform {
+  required_providers {
+    test = { source = "hashicorp/test" }
+  }
+}
+
+resource "test_resource" "build" {
+  value = "sandbox:latest"
+}
+
+output "image_ref" {
+  value = test_resource.build.value
+}
+
+-- runner/main.tf --
+terraform {
+  required_providers {
+    test = { source = "hashicorp/test" }
+  }
+}
+
+variable "sandbox_image" {
+  type = string
+}
+
+variable "target_images" {
+  type = map(string)
+}
+
+locals {
+  tests = [
+    {
+      name  = "smoke"
+      image = var.sandbox_image
+      cmd   = "echo ok"
+    },
+  ]
+}
+
+resource "test_resource" "check" {
+  value = jsonencode({
+    images = var.target_images
+    tests  = local.tests
+  })
+}
+
+output "result" {
+  value = test_resource.check.value
+}
+
+-- .terraform/modules/modules.json --
+{"Modules":[
+  {"Key":"","Source":"","Dir":"."},
+  {"Key":"sandbox","Source":"./sandbox","Dir":"sandbox"},
+  {"Key":"runner","Source":"./runner","Dir":"runner"}
+]}
+
+-- build --
+**
+-- want.json --
+{
+  "targets": 5,
+  "outputs": {
+    "module.runner.output.result": "{\"images\":{\"app\":\"sandbox:latest\"},\"tests\":[{\"cmd\":\"echo ok\",\"image\":\"sandbox:latest\",\"name\":\"smoke\"}]}",
+    "module.sandbox.output.image_ref": "sandbox:latest",
+    "output.result": "{\"images\":{\"app\":\"sandbox:latest\"},\"tests\":[{\"cmd\":\"echo ok\",\"image\":\"sandbox:latest\",\"name\":\"smoke\"}]}"
+  },
+  "actions": {
+    "submitted": 2,
+    "executed": 2,
+    "cached": 0,
+    "failed": 0
+  }
+}

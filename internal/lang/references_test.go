@@ -100,3 +100,30 @@ func TestReferencesInExpr(t *testing.T) {
 		})
 	}
 }
+
+func TestReferencesInExprIgnoresForExprLocalVariables(t *testing.T) {
+	expr, diags := hclsyntax.ParseExpression([]byte(`{
+  for k, v in local.tags : k => provider::oci::parse(v)
+}`), "test.tf", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		t.Fatalf("Failed to parse expression: %s", diags.Error())
+	}
+
+	refs, refDiags := ReferencesInExpr(addrs.ParseRef, expr)
+	if refDiags.HasErrors() {
+		t.Fatalf("Unexpected diagnostics: %s", refDiags.Err())
+	}
+
+	var got []string
+	for _, ref := range refs {
+		got = append(got, ref.Subject.String())
+	}
+
+	want := []string{
+		"local.tags",
+		"provider::oci::parse",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("Wrong references (-want +got):\n%s", diff)
+	}
+}

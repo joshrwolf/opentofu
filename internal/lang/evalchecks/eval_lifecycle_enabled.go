@@ -20,10 +20,30 @@ import (
 // meta-argument and returns either its boolean result or errors describing
 // why such a result cannot be evaluated.
 func EvaluateEnabledExpression(expr hcl.Expression, hclCtxFunc ContextFunc) (bool, tfdiags.Diagnostics) {
+	if expr == nil {
+		return false, nil
+	}
+
+	enabledVal, diags := EvaluateEnabledExpressionValue(expr, hclCtxFunc, false)
+	if diags.HasErrors() {
+		return false, diags
+	}
+
+	return enabledVal.True(), diags
+}
+
+// EvaluateEnabledExpressionValue evaluates an expression assigned to an
+// "enabled" meta-argument and returns its validated value.
+//
+// When allowUnknown is true, unknown boolean results are returned without an
+// error so callers can treat them as deferred. Null, sensitive, ephemeral, and
+// wrong-type values still produce diagnostics.
+func EvaluateEnabledExpressionValue(expr hcl.Expression, hclCtxFunc ContextFunc, allowUnknown bool) (cty.Value, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
+	nullEnabled := cty.NullVal(cty.Bool)
 
 	if expr == nil {
-		return false, diags
+		return nullEnabled, diags
 	}
 
 	refs, refsDiags := lang.ReferencesInExpr(addrs.ParseRef, expr)
@@ -32,7 +52,7 @@ func EvaluateEnabledExpression(expr hcl.Expression, hclCtxFunc ContextFunc) (boo
 	hclCtx, refsDiags = hclCtxFunc(refs)
 	diags = diags.Append(refsDiags)
 	if diags.HasErrors() { // Can't continue if we don't even have a valid scope
-		return false, diags
+		return nullEnabled, diags
 	}
 
 	rawEnabledVal, enabledDiags := expr.Value(hclCtx)
@@ -71,7 +91,7 @@ func EvaluateEnabledExpression(expr hcl.Expression, hclCtxFunc ContextFunc) (boo
 			EvalContext: hclCtx,
 		})
 	}
-	if !rawEnabledVal.IsKnown() {
+	if !allowUnknown && !rawEnabledVal.IsKnown() {
 		diags = diags.Append(&hcl.Diagnostic{
 			Severity:    hcl.DiagError,
 			Summary:     "Invalid enabled argument",
@@ -84,7 +104,7 @@ func EvaluateEnabledExpression(expr hcl.Expression, hclCtxFunc ContextFunc) (boo
 	}
 
 	if diags.HasErrors() {
-		return false, diags
+		return nullEnabled, diags
 	}
 
 	enabledVal, err := convert.Convert(rawEnabledVal, cty.Bool)
@@ -100,10 +120,8 @@ func EvaluateEnabledExpression(expr hcl.Expression, hclCtxFunc ContextFunc) (boo
 	}
 
 	if diags.HasErrors() {
-		return false, diags
+		return nullEnabled, diags
 	}
 
-	// If we get here then we've eliminated all of the reasons why the
-	// following could potentially panic.
-	return enabledVal.True(), diags
+	return enabledVal, diags
 }

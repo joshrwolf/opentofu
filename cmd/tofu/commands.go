@@ -133,6 +133,18 @@ func initCommands(
 			}, nil
 		},
 
+		"build": func() (cli.Command, error) {
+			return &command.BuildCommand{
+				Meta: meta,
+			}, nil
+		},
+
+		"query": func() (cli.Command, error) {
+			return &command.QueryCommand{
+				Meta: meta,
+			}, nil
+		},
+
 		"console": func() (cli.Command, error) {
 			return &command.ConsoleCommand{
 				Meta: meta,
@@ -451,6 +463,7 @@ func initCommands(
 
 	primaryCommands = []string{
 		"init",
+		"build",
 		"validate",
 		"plan",
 		"apply",

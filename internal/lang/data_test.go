@@ -21,6 +21,7 @@ type dataForTests struct {
 	LocalValues    map[string]cty.Value
 	OutputValues   map[string]cty.Value
 	Modules        map[string]cty.Value
+	Runs           map[string]cty.Value
 	PathAttrs      map[string]cty.Value
 	TerraformAttrs map[string]cty.Value
 	InputVariables map[string]cty.Value
@@ -55,6 +56,10 @@ func (d *dataForTests) GetLocalValue(_ context.Context, addr addrs.LocalValue, r
 
 func (d *dataForTests) GetModule(_ context.Context, addr addrs.ModuleCall, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return d.Modules[addr.String()], nil
+}
+
+func (d *dataForTests) GetRun(_ context.Context, addr addrs.Run, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return d.Runs[addr.Name], nil
 }
 
 func (d *dataForTests) GetModuleInstanceOutput(_ context.Context, addr addrs.ModuleCallInstanceOutput, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {

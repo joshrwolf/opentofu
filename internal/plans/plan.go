@@ -6,6 +6,7 @@
 package plans
 
 import (
+	"context"
 	"sort"
 	"time"
 
@@ -223,7 +224,7 @@ func (p *Plan) ProviderAddrs() []addrs.AbsProviderConfig {
 
 // VariableMapper checks that all the provided variables match what has been provided while building the plan.
 func (plan *Plan) VariableMapper() configs.StaticModuleVariables {
-	return func(variable *configs.Variable) (cty.Value, hcl.Diagnostics) {
+	return func(_ context.Context, variable *configs.Variable, _ configs.EvalOverlay) (cty.Value, hcl.Diagnostics) {
 		var diags hcl.Diagnostics
 
 		name := variable.Name

@@ -286,7 +286,7 @@ func (mc *ModuleCall) decodeStaticVersion(ctx context.Context, eval *StaticEvalu
 func (mc *ModuleCall) decodeStaticVariables(ctx context.Context, eval *StaticEvaluator) {
 	attr, _ := mc.Config.JustAttributes()
 
-	mc.Variables = func(variable *Variable) (cty.Value, hcl.Diagnostics) {
+	mc.Variables = func(_ context.Context, variable *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 		v, ok := attr[variable.Name]
 		if !ok {
 			if variable.Required() {

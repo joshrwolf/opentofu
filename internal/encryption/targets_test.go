@@ -6,6 +6,7 @@
 package encryption
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"testing"
@@ -458,7 +459,7 @@ func TestBaseEncryption_methodConfigsFromTargetAndSetup(t *testing.T) {
 		},
 	}
 
-	getVars := func(v *configs.Variable) (cty.Value, hcl.Diagnostics) {
+	getVars := func(_ context.Context, v *configs.Variable, _ configs.EvalOverlay) (cty.Value, hcl.Diagnostics) {
 		return v.Default, nil
 	}
 

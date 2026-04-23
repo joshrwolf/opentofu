@@ -1,0 +1,54 @@
+An output selecting into a deferred module that depends on an unsupported
+runtime target terminates with diagnostics rather than looping forever.
+
+The module for_each depends on test_resource.base.id (a runtime value from
+an unsupported provider target), so the module instances can never resolve.
+The output referencing the module is blocked.
+
+-- main.tf --
+resource "test_resource" "base" {
+  value = "x"
+}
+
+module "child" {
+  source   = "./child"
+  for_each = test_resource.base.id != "" ? { only = "x" } : {}
+  value    = each.value
+}
+
+output "child_value" {
+  value = { for k, v in module.child : k => v.value }
+}
+
+-- child/main.tf --
+variable "value" {
+  type = string
+}
+
+resource "test_resource" "build" {
+  value = var.value
+}
+
+output "value" {
+  value = test_resource.build.value
+}
+
+-- .terraform/modules/modules.json --
+{"Modules":[{"Key":"","Source":"","Dir":"."},{"Key":"child","Source":"./child","Dir":"child"}]}
+
+-- build --
+output.child_value
+
+-- want.json --
+{
+  "targets": 1,
+  "outputs": {
+    "output.child_value": "cty.ObjectVal(map[string]cty.Value{\"only\":cty.StringVal(\"x\")})"
+  },
+  "actions": {
+    "submitted": 2,
+    "executed": 2,
+    "cached": 0,
+    "failed": 0
+  }
+}

@@ -1,0 +1,42 @@
+Targets with depends_on produce After edges in the engine.
+All After-dep specs must be submitted to the engine or it deadlocks.
+
+-- main.tf --
+resource "test_resource" "build" {
+  value = "image"
+}
+
+resource "test_resource" "sign" {
+  value = test_resource.build.value
+}
+
+resource "test_resource" "attest" {
+  for_each = toset(["sbom", "provenance"])
+  value      = test_resource.build.value
+  depends_on = [test_resource.sign]
+}
+
+output "result" {
+  value      = test_resource.sign.value
+  depends_on = [test_resource.attest]
+}
+
+-- .terraform/modules/modules.json --
+{"Modules":[{"Key":"","Source":"","Dir":"."}]}
+
+-- build --
+**
+
+-- want.json --
+{
+  "targets": 5,
+  "outputs": {
+    "output.result": "image"
+  },
+  "actions": {
+    "submitted": 4,
+    "executed": 4,
+    "cached": 0,
+    "failed": 0
+  }
+}

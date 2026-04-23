@@ -341,12 +341,9 @@ func (s *Scope) evalContext(ctx context.Context, parent *hcl.EvalContext, refs [
 	// Calling NewChild() on a nil parent will
 	// produce an EvalContext with no parent.
 	hclCtx := parent.NewChild()
-	hclCtx.Functions = make(map[string]function.Function)
+	hclCtx.Functions = s.Functions()
 	hclCtx.Variables = make(map[string]cty.Value)
-
-	// The built-in functions are our starting point, but we might add extra
-	// provider-defined functions below.
-	maps.Copy(hclCtx.Functions, s.Functions())
+	clonedFunctions := false
 
 	// Easy path for common case where there are no references at all.
 	if len(refs) == 0 {
@@ -385,6 +382,12 @@ func (s *Scope) evalContext(ctx context.Context, parent *hcl.EvalContext, refs [
 				diags = diags.Append(fnDiags)
 
 				if !fnDiags.HasErrors() {
+					if !clonedFunctions {
+						funcs := make(map[string]function.Function, len(hclCtx.Functions)+1)
+						maps.Copy(funcs, hclCtx.Functions)
+						hclCtx.Functions = funcs
+						clonedFunctions = true
+					}
 					hclCtx.Functions[subj.String()] = *fn
 				}
 			}
@@ -407,6 +410,7 @@ type evalVarBuilder struct {
 	managedResources   map[string]map[string]cty.Value
 	ephemeralResources map[string]map[string]cty.Value
 	wholeModules       map[string]cty.Value
+	runs               map[string]cty.Value
 	inputVariables     map[string]cty.Value
 	localValues        map[string]cty.Value
 	outputValues       map[string]cty.Value
@@ -419,22 +423,7 @@ type evalVarBuilder struct {
 }
 
 func (s *Scope) newEvalVarBuilder() *evalVarBuilder {
-	return &evalVarBuilder{
-		s: s,
-
-		dataResources:      map[string]map[string]cty.Value{},
-		ephemeralResources: map[string]map[string]cty.Value{},
-		managedResources:   map[string]map[string]cty.Value{},
-		wholeModules:       map[string]cty.Value{},
-		inputVariables:     map[string]cty.Value{},
-		localValues:        map[string]cty.Value{},
-		outputValues:       map[string]cty.Value{},
-		pathAttrs:          map[string]cty.Value{},
-		terraformAttrs:     map[string]cty.Value{},
-		countAttrs:         map[string]cty.Value{},
-		forEachAttrs:       map[string]cty.Value{},
-		checkBlocks:        map[string]cty.Value{},
-	}
+	return &evalVarBuilder{s: s}
 }
 
 func (b *evalVarBuilder) putSelfValue(ctx context.Context, selfAddr addrs.Referenceable, ref *addrs.Reference) tfdiags.Diagnostics {
@@ -512,31 +501,64 @@ func (b *evalVarBuilder) putValueBySubject(ctx context.Context, ref *addrs.Refer
 		diags = diags.Append(b.putResourceValue(ctx, subj, rng))
 
 	case addrs.ModuleCall:
+		if b.wholeModules == nil {
+			b.wholeModules = make(map[string]cty.Value)
+		}
 		b.wholeModules[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetModule(ctx, subj, rng))
 
+	case addrs.Run:
+		if b.runs == nil {
+			b.runs = make(map[string]cty.Value)
+		}
+		b.runs[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetRun(ctx, subj, rng))
+
 	case addrs.InputVariable:
+		if b.inputVariables == nil {
+			b.inputVariables = make(map[string]cty.Value)
+		}
 		b.inputVariables[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetInputVariable(ctx, subj, rng))
 
 	case addrs.LocalValue:
+		if b.localValues == nil {
+			b.localValues = make(map[string]cty.Value)
+		}
 		b.localValues[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetLocalValue(ctx, subj, rng))
 
 	case addrs.PathAttr:
+		if b.pathAttrs == nil {
+			b.pathAttrs = make(map[string]cty.Value)
+		}
 		b.pathAttrs[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetPathAttr(ctx, subj, rng))
 
 	case addrs.TerraformAttr:
+		if b.terraformAttrs == nil {
+			b.terraformAttrs = make(map[string]cty.Value)
+		}
 		b.terraformAttrs[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetTerraformAttr(ctx, subj, rng))
 
 	case addrs.CountAttr:
+		if b.countAttrs == nil {
+			b.countAttrs = make(map[string]cty.Value)
+		}
 		b.countAttrs[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetCountAttr(ctx, subj, rng))
 
 	case addrs.ForEachAttr:
+		if b.forEachAttrs == nil {
+			b.forEachAttrs = make(map[string]cty.Value)
+		}
 		b.forEachAttrs[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetForEachAttr(ctx, subj, rng))
 
 	case addrs.OutputValue:
+		if b.outputValues == nil {
+			b.outputValues = make(map[string]cty.Value)
+		}
 		b.outputValues[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetOutput(ctx, subj, rng))
 
 	case addrs.Check:
-		b.outputValues[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetCheckBlock(ctx, subj, rng))
+		if b.checkBlocks == nil {
+			b.checkBlocks = make(map[string]cty.Value)
+		}
+		b.checkBlocks[subj.Name], normDiags = normalizeRefValue(b.s.Data.GetCheckBlock(ctx, subj, rng))
 
 	default:
 		// Should never happen
@@ -553,10 +575,19 @@ func (b *evalVarBuilder) putResourceValue(ctx context.Context, res addrs.Resourc
 
 	switch res.Mode {
 	case addrs.ManagedResourceMode:
+		if b.managedResources == nil {
+			b.managedResources = make(map[string]map[string]cty.Value)
+		}
 		into = b.managedResources
 	case addrs.DataResourceMode:
+		if b.dataResources == nil {
+			b.dataResources = make(map[string]map[string]cty.Value)
+		}
 		into = b.dataResources
 	case addrs.EphemeralResourceMode:
+		if b.ephemeralResources == nil {
+			b.ephemeralResources = make(map[string]map[string]cty.Value)
+		}
 		into = b.ephemeralResources
 	case addrs.InvalidResourceMode:
 		panic("BUG: got invalid resource mode")
@@ -575,26 +606,50 @@ func (b *evalVarBuilder) putResourceValue(ctx context.Context, res addrs.Resourc
 }
 
 func (b *evalVarBuilder) buildAllVariablesInto(vals map[string]cty.Value) {
-	// Managed resources are exposed in two different locations. The primary
-	// is at the top level where the resource type name is the root of the
-	// traversal, but we also expose them under "resource" as an escaping
-	// technique if we add a reserved name in a future language edition which
-	// conflicts with someone's existing provider.
-	for k, v := range buildResourceObjects(b.managedResources) {
-		vals[k] = v
+	if len(b.managedResources) > 0 {
+		// Managed resources are exposed in two different locations. The primary
+		// is at the top level where the resource type name is the root of the
+		// traversal, but we also expose them under "resource" as an escaping
+		// technique if we add a reserved name in a future language edition which
+		// conflicts with someone's existing provider.
+		managedObjects := buildResourceObjects(b.managedResources)
+		for k, v := range managedObjects {
+			vals[k] = v
+		}
+		vals["resource"] = cty.ObjectVal(managedObjects)
 	}
-	vals["resource"] = cty.ObjectVal(buildResourceObjects(b.managedResources))
 
-	vals["data"] = cty.ObjectVal(buildResourceObjects(b.dataResources))
-	vals["ephemeral"] = cty.ObjectVal(buildResourceObjects(b.ephemeralResources))
-	vals["module"] = cty.ObjectVal(b.wholeModules)
-	vals["var"] = cty.ObjectVal(b.inputVariables)
-	vals["local"] = cty.ObjectVal(b.localValues)
-	vals["path"] = cty.ObjectVal(b.pathAttrs)
-	vals["terraform"] = cty.ObjectVal(b.terraformAttrs)
-	vals["tofu"] = cty.ObjectVal(b.terraformAttrs)
-	vals["count"] = cty.ObjectVal(b.countAttrs)
-	vals["each"] = cty.ObjectVal(b.forEachAttrs)
+	if len(b.dataResources) > 0 {
+		vals["data"] = cty.ObjectVal(buildResourceObjects(b.dataResources))
+	}
+	if len(b.ephemeralResources) > 0 {
+		vals["ephemeral"] = cty.ObjectVal(buildResourceObjects(b.ephemeralResources))
+	}
+	if len(b.wholeModules) > 0 {
+		vals["module"] = cty.ObjectVal(b.wholeModules)
+	}
+	if len(b.runs) > 0 {
+		vals["run"] = cty.ObjectVal(b.runs)
+	}
+	if len(b.inputVariables) > 0 {
+		vals["var"] = cty.ObjectVal(b.inputVariables)
+	}
+	if len(b.localValues) > 0 {
+		vals["local"] = cty.ObjectVal(b.localValues)
+	}
+	if len(b.pathAttrs) > 0 {
+		vals["path"] = cty.ObjectVal(b.pathAttrs)
+	}
+	if len(b.terraformAttrs) > 0 {
+		vals["terraform"] = cty.ObjectVal(b.terraformAttrs)
+		vals["tofu"] = cty.ObjectVal(b.terraformAttrs)
+	}
+	if len(b.countAttrs) > 0 {
+		vals["count"] = cty.ObjectVal(b.countAttrs)
+	}
+	if len(b.forEachAttrs) > 0 {
+		vals["each"] = cty.ObjectVal(b.forEachAttrs)
+	}
 
 	// Checks and outputs are conditionally included in the available scope, so
 	// we'll only write out their values if we actually have something for them.

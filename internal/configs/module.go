@@ -42,6 +42,7 @@ type Module struct {
 	Variables map[string]*Variable
 	Locals    map[string]*Local
 	Outputs   map[string]*Output
+	Runs      map[string]*Run
 
 	ModuleCalls map[string]*ModuleCall
 
@@ -99,6 +100,7 @@ type File struct {
 	Variables []*Variable
 	Locals    []*Local
 	Outputs   []*Output
+	Runs      []*Run
 
 	ModuleCalls []*ModuleCall
 
@@ -173,6 +175,7 @@ func NewModuleUneval(primaryFiles, overrideFiles []*File, sourceDir string, load
 		Variables:          map[string]*Variable{},
 		Locals:             map[string]*Local{},
 		Outputs:            map[string]*Output{},
+		Runs:               map[string]*Run{},
 		ModuleCalls:        map[string]*ModuleCall{},
 		ManagedResources:   map[string]*Resource{},
 		DataResources:      map[string]*Resource{},
@@ -428,6 +431,18 @@ func (m *Module) appendFile(file *File) hcl.Diagnostics {
 			})
 		}
 		m.Outputs[o.Name] = o
+	}
+
+	for _, r := range file.Runs {
+		if existing, exists := m.Runs[r.Name]; exists {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate run definition",
+				Detail:   fmt.Sprintf("A run block named %q was already defined at %s. Run block names must be unique within a module.", existing.Name, existing.DeclRange),
+				Subject:  &r.DeclRange,
+			})
+		}
+		m.Runs[r.Name] = r
 	}
 
 	for _, mc := range file.ModuleCalls {
@@ -730,6 +745,15 @@ func (m *Module) mergeFile(file *File) hcl.Diagnostics {
 		}
 		mergeDiags := existing.merge(o)
 		diags = append(diags, mergeDiags...)
+	}
+
+	for _, r := range file.Runs {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Cannot override run blocks",
+			Detail:   "Run blocks can appear only in normal files, not in override files.",
+			Subject:  r.DeclRange.Ptr(),
+		})
 	}
 
 	for _, mc := range file.ModuleCalls {

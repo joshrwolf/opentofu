@@ -6,6 +6,7 @@
 package configs
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,7 +80,7 @@ func TestParserLoadConfigDirSuccess(t *testing.T) {
 			})
 
 			_, diags := parser.LoadConfigDir("mod", NewStaticModuleCall(addrs.RootModule, hcl.Range{},
-				func(v *Variable) (cty.Value, hcl.Diagnostics) {
+				func(_ context.Context, v *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 					if !v.Required() {
 						// Allow defaults in this test
 						return v.Default, nil

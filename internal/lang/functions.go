@@ -7,6 +7,8 @@ package lang
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	ctyyaml "github.com/zclconf/go-cty-yaml"
@@ -25,44 +27,67 @@ var impureFunctions = []string{
 	"uuid",
 }
 
+var sharedFunctionTables sync.Map
+
+type functionTableKey struct {
+	baseDir       string
+	consoleMode   bool
+	pureOnly      bool
+	planTimestamp time.Time
+}
+
 // Functions returns the set of functions that should be used to when evaluating
 // expressions in the receiving scope.
 func (s *Scope) Functions() map[string]function.Function {
 	s.funcsLock.Lock()
+	defer s.funcsLock.Unlock()
 	if s.funcs == nil {
-		s.funcs = makeBaseFunctionTable(s.BaseDir)
+		key := functionTableKey{
+			baseDir:       s.BaseDir,
+			consoleMode:   s.ConsoleMode,
+			pureOnly:      s.PureOnly,
+			planTimestamp: s.PlanTimestamp,
+		}
+		if cached, ok := sharedFunctionTables.Load(key); ok {
+			s.funcs = cached.(map[string]function.Function)
+			return s.funcs
+		}
+
+		funcTable := makeBaseFunctionTable(s.BaseDir)
 		if s.ConsoleMode {
 			// The type function is only available in OpenTofu console.
-			s.funcs["type"] = funcs.TypeFunc
+			funcTable["type"] = funcs.TypeFunc
 		} else {
 			// The plantimestamp function doesn't make sense in the OpenTofu
 			// console.
-			s.funcs["plantimestamp"] = funcs.MakeStaticTimestampFunc(s.PlanTimestamp)
+			funcTable["plantimestamp"] = funcs.MakeStaticTimestampFunc(s.PlanTimestamp)
 		}
 
 		if s.PureOnly {
 			// Force our few impure functions to return unknown so that we
 			// can defer evaluating them until a later pass.
 			for _, name := range impureFunctions {
-				s.funcs[name] = function.Unpredictable(s.funcs[name])
+				funcTable[name] = function.Unpredictable(funcTable[name])
 			}
 		}
 
-		coreNames := make([]string, 0)
+		coreNames := make([]string, 0, len(funcTable))
 		// Add a description to each function and parameter based on the
 		// contents of descriptionList.
 		// One must create a matching description entry whenever a new
 		// function is introduced.
-		for name, f := range s.funcs {
-			s.funcs[name] = funcs.WithDescription(name, f)
+		for name, f := range funcTable {
+			funcTable[name] = funcs.WithDescription(name, f)
 			coreNames = append(coreNames, name)
 		}
 		// Copy all stdlib funcs into core:: namespace
 		for _, name := range coreNames {
-			s.funcs[addrs.ParseFunction(name).FullyQualified().String()] = s.funcs[name]
+			funcTable[addrs.ParseFunction(name).FullyQualified().String()] = funcTable[name]
 		}
+
+		actual, _ := sharedFunctionTables.LoadOrStore(key, funcTable)
+		s.funcs = actual.(map[string]function.Function)
 	}
-	s.funcsLock.Unlock()
 
 	return s.funcs
 }

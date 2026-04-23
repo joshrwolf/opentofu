@@ -22,14 +22,15 @@ import (
 	"github.com/opentofu/opentofu/internal/tfdiags"
 )
 
-// newStaticScope creates a lang.Scope that's backed by the static view of the module represented by the StaticEvaluator
-func newStaticScope(eval *StaticEvaluator, stack0 StaticIdentifier, stack ...StaticIdentifier) *lang.Scope {
+
+func newStaticScopeWithOptions(eval *StaticEvaluator, stack0 StaticIdentifier, opts StaticEvalOptions, stack ...StaticIdentifier) *lang.Scope {
 	return &lang.Scope{
-		Data:        staticScopeData{eval, append([]StaticIdentifier{stack0}, stack...)},
-		ParseRef:    addrs.ParseRef,
-		BaseDir:     ".", // Always current working directory for now. (same as Evaluator.Scope())
-		PureOnly:    false,
-		ConsoleMode: false,
+		Data:              staticScopeData{eval: eval, stack: append([]StaticIdentifier{stack0}, stack...), opts: opts},
+		ParseRef:          addrs.ParseRef,
+		BaseDir:           ".", // Always current working directory for now. (same as Evaluator.Scope())
+		PureOnly:          false,
+		ConsoleMode:       false,
+		ProviderFunctions: opts.ProviderFunctions,
 	}
 }
 
@@ -38,6 +39,7 @@ func newStaticScope(eval *StaticEvaluator, stack0 StaticIdentifier, stack ...Sta
 type staticScopeData struct {
 	eval  *StaticEvaluator
 	stack []StaticIdentifier
+	opts  StaticEvalOptions
 }
 
 // staticScopeData must implement lang.Data
@@ -57,7 +59,7 @@ func (s staticScopeData) scope(ident StaticIdentifier) (*lang.Scope, tfdiags.Dia
 			})
 		}
 	}
-	return newStaticScope(s.eval, s.stack[0], append(s.stack[1:], ident)...), diags
+	return newStaticScopeWithOptions(s.eval, s.stack[0], s.opts, append(s.stack[1:], ident)...), diags
 }
 
 // If an error occurs when resolving a dependent value, we need to add additional context to the diagnostics
@@ -66,7 +68,7 @@ func (s staticScopeData) enhanceDiagnostics(ident StaticIdentifier, diags tfdiag
 		top := s.stack[len(s.stack)-1]
 		diags = diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "Unable to compute static value",
+			Summary:  staticEvalUnavailableDependencySummary,
 			Detail:   fmt.Sprintf("%s depends on %s which is not available", top, ident.String()),
 			Subject:  top.DeclRange.Ptr(),
 		})
@@ -88,24 +90,35 @@ func (s staticScopeData) StaticValidateReferences(_ context.Context, refs []*add
 			continue
 		case addrs.TerraformAttr:
 			continue
+		case addrs.CountAttr:
+			if _, ok := s.opts.CountAttrs[subject.Name]; ok {
+				continue
+			}
+		case addrs.ForEachAttr:
+			if _, ok := s.opts.ForEachAttrs[subject.Name]; ok {
+				continue
+			}
 		case addrs.ModuleCallInstanceOutput:
 			diags = diags.Append(&hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  "Module output not supported in static context",
+				Summary:  staticEvalModuleOutputSummary,
 				Detail:   fmt.Sprintf("Unable to use %s in static context, which is required by %s", subject.String(), top.String()),
 				Subject:  ref.SourceRange.ToHCL().Ptr(),
 			})
 		case addrs.ProviderFunction:
+			if s.opts.ProviderFunctions != nil {
+				continue
+			}
 			diags = diags.Append(&hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  "Provider function in static context",
+				Summary:  staticEvalProviderFunctionSummary,
 				Detail:   fmt.Sprintf("Unable to use %s in static context, which is required by %s", subject.String(), top.String()),
 				Subject:  ref.SourceRange.ToHCL().Ptr(),
 			})
 		default:
 			diags = diags.Append(&hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  "Dynamic value in static context",
+				Summary:  staticEvalDynamicValueSummary,
 				Detail:   fmt.Sprintf("Unable to use %s in static context, which is required by %s", subject.String(), top.String()),
 				Subject:  ref.SourceRange.ToHCL().Ptr(),
 			})
@@ -114,12 +127,28 @@ func (s staticScopeData) StaticValidateReferences(_ context.Context, refs []*add
 	return diags
 }
 
-func (s staticScopeData) GetCountAttr(context.Context, addrs.CountAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
-	panic("Not Available in Static Context")
+func (s staticScopeData) GetCountAttr(_ context.Context, addr addrs.CountAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	if value, ok := s.opts.CountAttrs[addr.Name]; ok {
+		return value, nil
+	}
+	return cty.DynamicVal, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Invalid repetition value in static context",
+		Detail:   fmt.Sprintf("The repetition value %s is not available in this static context.", addr.String()),
+		Subject:  rng.ToHCL().Ptr(),
+	})
 }
 
-func (s staticScopeData) GetForEachAttr(context.Context, addrs.ForEachAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
-	panic("Not Available in Static Context")
+func (s staticScopeData) GetForEachAttr(_ context.Context, addr addrs.ForEachAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	if value, ok := s.opts.ForEachAttrs[addr.Name]; ok {
+		return value, nil
+	}
+	return cty.DynamicVal, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Invalid repetition value in static context",
+		Detail:   fmt.Sprintf("The repetition value %s is not available in this static context.", addr.String()),
+		Subject:  rng.ToHCL().Ptr(),
+	})
 }
 
 func (s staticScopeData) GetResource(context.Context, addrs.Resource, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
@@ -139,6 +168,12 @@ func (s staticScopeData) GetLocalValue(ctx context.Context, ident addrs.LocalVal
 		})
 	}
 
+	if c := s.opts.EvalCache; c != nil {
+		if val, ok := c.Lookup(ident.Name); ok {
+			return val, nil
+		}
+	}
+
 	id := StaticIdentifier{
 		Module:    s.eval.call.addr,
 		Subject:   fmt.Sprintf("local.%s", local.Name),
@@ -152,10 +187,17 @@ func (s staticScopeData) GetLocalValue(ctx context.Context, ident addrs.LocalVal
 	}
 
 	val, valDiags := scope.EvalExpr(ctx, local.Expr, cty.DynamicPseudoType)
+	if c := s.opts.EvalCache; c != nil && !valDiags.HasErrors() {
+		c.Store(ident.Name, val)
+	}
 	return val, s.enhanceDiagnostics(id, diags.Append(valDiags))
 }
 
 func (s staticScopeData) GetModule(context.Context, addrs.ModuleCall, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	panic("Not Available in Static Context")
+}
+
+func (s staticScopeData) GetRun(context.Context, addrs.Run, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	panic("Not Available in Static Context")
 }
 
@@ -247,7 +289,7 @@ func (s staticScopeData) GetTerraformAttr(_ context.Context, addr addrs.Terrafor
 	}
 }
 
-func (s staticScopeData) GetInputVariable(_ context.Context, ident addrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (s staticScopeData) GetInputVariable(ctx context.Context, ident addrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	variable, ok := s.eval.cfg.Variables[ident.Name]
@@ -275,7 +317,19 @@ func (s staticScopeData) GetInputVariable(_ context.Context, ident addrs.InputVa
 		DeclRange: variable.DeclRange,
 	}
 
-	val, valDiags := s.eval.call.vars(variable)
+	vars := s.eval.call.vars
+	if s.opts.Variables != nil {
+		vars = s.opts.Variables
+	}
+	if vars == nil {
+		return cty.NilVal, diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Undefined variable",
+			Detail:   fmt.Sprintf("OpenTofu does not have a static value resolver for variable %s in this context.", ident.String()),
+			Subject:  rng.ToHCL().Ptr(),
+		})
+	}
+	val, valDiags := vars(ctx, variable, EvalOverlay{Runtime: s.opts.Runtime, ProviderFunctions: s.opts.ProviderFunctions})
 	diags = diags.Append(valDiags)
 	if valDiags.HasErrors() {
 		// If the variable value was too invalid to pass the initial request

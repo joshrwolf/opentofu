@@ -197,3 +197,42 @@ func TestEvaluateEnabledExpression_errors(t *testing.T) {
 		})
 	}
 }
+
+func TestEvaluateEnabledExpressionValueAllowUnknown(t *testing.T) {
+	tests := map[string]struct {
+		expr      hcl.Expression
+		wantKnown bool
+		wantErr   string
+	}{
+		"unknown bool defers": {
+			expr:      hcltest.MockExprLiteral(cty.UnknownVal(cty.Bool)),
+			wantKnown: false,
+		},
+		"unknown number still errors": {
+			expr:    hcltest.MockExprLiteral(cty.UnknownVal(cty.Number)),
+			wantErr: `The given "enabled" argument value is unsuitable: bool required, but have number.`,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, diags := EvaluateEnabledExpressionValue(test.expr, mockRefsFunc(), true)
+			if test.wantErr != "" {
+				if len(diags) != 1 {
+					t.Fatalf("wrong diagnostics size: got %d want 1", len(diags))
+				}
+				if diff := cmp.Diff(test.wantErr, diags[0].Description().Detail); diff != "" {
+					t.Fatalf("wrong diagnostic detail (-want +got):\n%s", diff)
+				}
+				return
+			}
+
+			if len(diags) != 0 {
+				t.Fatalf("unexpected diagnostics: %s", spew.Sdump(diags))
+			}
+			if got.IsKnown() != test.wantKnown {
+				t.Fatalf("wrong known-ness: got %t want %t", got.IsKnown(), test.wantKnown)
+			}
+		})
+	}
+}

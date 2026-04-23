@@ -180,6 +180,13 @@ func loadConfigFileBody(body hcl.Body, _ string, override bool) (*File, hcl.Diag
 				file.Outputs = append(file.Outputs, cfg)
 			}
 
+		case "run":
+			cfg, cfgDiags := decodeRunBlock(block, override)
+			diags = append(diags, cfgDiags...)
+			if cfg != nil {
+				file.Runs = append(file.Runs, cfg)
+			}
+
 		case "module":
 			cfg, cfgDiags := decodeModuleBlock(block, override)
 			diags = append(diags, cfgDiags...)
@@ -274,6 +281,10 @@ var configFileSchema = &hcl.BodySchema{
 		},
 		{
 			Type:       "output",
+			LabelNames: []string{"name"},
+		},
+		{
+			Type:       "run",
 			LabelNames: []string{"name"},
 		},
 		{

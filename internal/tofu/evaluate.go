@@ -703,6 +703,17 @@ func (d *evaluationStateData) GetPathAttr(_ context.Context, addr addrs.PathAttr
 	}
 }
 
+func (d *evaluationStateData) GetRun(_ context.Context, addr addrs.Run, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	diags = diags.Append(&hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Reference to undeclared run block",
+		Detail:   fmt.Sprintf("A run block with the name %q has not been declared in this evaluation context.", addr.Name),
+		Subject:  rng.ToHCL().Ptr(),
+	})
+	return cty.DynamicVal, diags
+}
+
 func (d *evaluationStateData) GetResource(ctx context.Context, addr addrs.Resource, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	// First we'll consult the configuration to see if an resource of this

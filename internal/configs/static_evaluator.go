@@ -15,6 +15,7 @@ import (
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/lang"
 	"github.com/opentofu/opentofu/internal/lang/marks"
+	"github.com/opentofu/opentofu/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -33,7 +34,16 @@ func (ref StaticIdentifier) String() string {
 	return val
 }
 
-type StaticModuleVariables func(v *Variable) (cty.Value, hcl.Diagnostics)
+// EvalOverlay carries evaluation-time context that flows through the
+// Variables closure and is applied via PreparedScope.WithOverlay.
+// It contains runtime/provider-functions but NOT count/each (those are
+// lexically scoped and must not leak into parent expression evaluation).
+type EvalOverlay struct {
+	Runtime           RuntimeValueLookup
+	ProviderFunctions lang.ProviderFunction
+}
+
+type StaticModuleVariables func(ctx context.Context, v *Variable, overlay EvalOverlay) (cty.Value, hcl.Diagnostics)
 
 // StaticModuleCall contains the information required to call a given module
 type StaticModuleCall struct {
@@ -70,7 +80,7 @@ func (s StaticModuleCall) WithVariables(vars StaticModuleVariables) StaticModule
 
 // only used in testing
 func RootModuleCallForTesting() StaticModuleCall {
-	return NewStaticModuleCall(addrs.RootModule, hcl.Range{}, func(_ *Variable) (cty.Value, hcl.Diagnostics) {
+	return NewStaticModuleCall(addrs.RootModule, hcl.Range{}, func(_ context.Context, _ *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 		panic("Variables have not been configured for this test!")
 	}, "<testing>", "")
 }
@@ -83,6 +93,40 @@ type StaticEvaluator struct {
 	cfg  *Module
 }
 
+type EvalCache interface {
+	Lookup(name string) (cty.Value, bool)
+	Store(name string, val cty.Value)
+}
+
+type StaticEvalOptions struct {
+	Runtime           RuntimeValueLookup
+	ProviderFunctions lang.ProviderFunction
+	Variables         StaticModuleVariables
+	CountAttrs        map[string]cty.Value
+	ForEachAttrs      map[string]cty.Value
+	EvalCache         EvalCache
+}
+
+type RuntimeLookupResult struct {
+	Value cty.Value
+	Known bool
+	Diags tfdiags.Diagnostics
+}
+
+type RuntimeValueLookup interface {
+	GetResource(context.Context, addrs.Resource, tfdiags.SourceRange) RuntimeLookupResult
+	GetModule(context.Context, addrs.ModuleCall, tfdiags.SourceRange) RuntimeLookupResult
+	GetRun(context.Context, addrs.Run, tfdiags.SourceRange) RuntimeLookupResult
+	GetOutput(context.Context, addrs.OutputValue, tfdiags.SourceRange) RuntimeLookupResult
+}
+
+const (
+	staticEvalDynamicValueSummary          = "Dynamic value in static context"
+	staticEvalModuleOutputSummary          = "Module output not supported in static context"
+	staticEvalProviderFunctionSummary      = "Provider function in static context"
+	staticEvalUnavailableDependencySummary = "Unable to compute static value"
+)
+
 // Creates a static evaluator based from the given module and module call
 func NewStaticEvaluator(mod *Module, call StaticModuleCall) *StaticEvaluator {
 	return &StaticEvaluator{
@@ -92,11 +136,23 @@ func NewStaticEvaluator(mod *Module, call StaticModuleCall) *StaticEvaluator {
 }
 
 func (s *StaticEvaluator) scope(ident StaticIdentifier) *lang.Scope {
-	return newStaticScope(s, ident)
+	return s.scopeWithOptions(ident, StaticEvalOptions{})
+}
+
+func (s *StaticEvaluator) scopeWithOptions(ident StaticIdentifier, opts StaticEvalOptions) *lang.Scope {
+	if opts.Runtime != nil {
+		return newRuntimeScopeWithOptions(s, ident, opts)
+	}
+	return newStaticScopeWithOptions(s, ident, opts)
 }
 
 func (s StaticEvaluator) Evaluate(ctx context.Context, expr hcl.Expression, ident StaticIdentifier) (cty.Value, hcl.Diagnostics) {
-	val, diags := s.scope(ident).EvalExpr(ctx, expr, cty.DynamicPseudoType)
+	return s.EvaluateWithOptions(ctx, expr, ident, StaticEvalOptions{})
+}
+
+
+func (s StaticEvaluator) EvaluateWithOptions(ctx context.Context, expr hcl.Expression, ident StaticIdentifier, opts StaticEvalOptions) (cty.Value, hcl.Diagnostics) {
+	val, diags := s.scopeWithOptions(ident, opts).EvalExpr(ctx, expr, cty.DynamicPseudoType)
 	return val, diags.ToHCL()
 }
 
@@ -127,16 +183,36 @@ func (s StaticEvaluator) DecodeExpression(ctx context.Context, expr hcl.Expressi
 }
 
 func (s StaticEvaluator) DecodeBlock(ctx context.Context, body hcl.Body, spec hcldec.Spec, ident StaticIdentifier) (cty.Value, hcl.Diagnostics) {
+	return s.DecodeBlockWithOptions(ctx, body, spec, ident, StaticEvalOptions{})
+}
+
+
+func (s StaticEvaluator) DecodeBlockWithOptions(ctx context.Context, body hcl.Body, spec hcldec.Spec, ident StaticIdentifier, opts StaticEvalOptions) (cty.Value, hcl.Diagnostics) {
 	var diags hcl.Diagnostics
 
-	refs, refsDiags := lang.References(addrs.ParseRef, hcldec.Variables(body, spec))
+	traversals := hcldec.Variables(body, spec)
+	for _, traversal := range hcldec.Functions(body, spec) {
+		if len(traversal) == 0 {
+			continue
+		}
+		root, ok := traversal[0].(hcl.TraverseRoot)
+		if !ok {
+			continue
+		}
+		if !addrs.ParseFunction(root.Name).IsNamespace(addrs.FunctionNamespaceProvider) {
+			continue
+		}
+		traversals = append(traversals, traversal)
+	}
+
+	refs, refsDiags := lang.References(addrs.ParseRef, traversals)
 	diags = append(diags, refsDiags.ToHCL()...)
 	if diags.HasErrors() {
 		return cty.DynamicVal, diags
 	}
 
-	hclCtx, ctxDiags := s.scope(ident).EvalContext(ctx, refs)
-	diags = append(diags, ctxDiags.ToHCL()...)
+	hclCtx, ctxDiags := s.EvalContextWithOptions(ctx, ident, refs, opts)
+	diags = append(diags, ctxDiags...)
 	if diags.HasErrors() {
 		return cty.DynamicVal, diags
 	}
@@ -147,10 +223,37 @@ func (s StaticEvaluator) DecodeBlock(ctx context.Context, body hcl.Body, spec hc
 }
 
 func (s StaticEvaluator) EvalContext(ctx context.Context, ident StaticIdentifier, refs []*addrs.Reference) (*hcl.EvalContext, hcl.Diagnostics) {
-	return s.EvalContextWithParent(ctx, nil, ident, refs)
+	return s.EvalContextWithOptions(ctx, ident, refs, StaticEvalOptions{})
 }
 
+
 func (s StaticEvaluator) EvalContextWithParent(ctx context.Context, parent *hcl.EvalContext, ident StaticIdentifier, refs []*addrs.Reference) (*hcl.EvalContext, hcl.Diagnostics) {
-	evalCtx, diags := s.scope(ident).EvalContextWithParent(ctx, parent, refs)
+	evalCtx, diags := s.scopeWithOptions(ident, StaticEvalOptions{}).EvalContextWithParent(ctx, parent, refs)
 	return evalCtx, diags.ToHCL()
+}
+
+func (s StaticEvaluator) EvalContextWithOptions(ctx context.Context, ident StaticIdentifier, refs []*addrs.Reference, opts StaticEvalOptions) (*hcl.EvalContext, hcl.Diagnostics) {
+	evalCtx, diags := s.scopeWithOptions(ident, opts).EvalContext(ctx, refs)
+	return evalCtx, diags.ToHCL()
+}
+
+func StaticEvalDefers(diags hcl.Diagnostics) bool {
+	if len(diags) == 0 {
+		return false
+	}
+	for _, diag := range diags {
+		if diag == nil {
+			continue
+		}
+		switch diag.Summary {
+		case staticEvalDynamicValueSummary,
+			staticEvalModuleOutputSummary,
+			staticEvalProviderFunctionSummary,
+			staticEvalUnavailableDependencySummary:
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }

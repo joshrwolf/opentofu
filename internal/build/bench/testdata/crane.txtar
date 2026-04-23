@@ -1,0 +1,377 @@
+Full crane-like image build pipeline matching images-private layout:
+  root (providers.tf, main.tf, generated.tf)
+  → images/crane/ (main.tf, public.tf, generated.tf)
+  → images/crane/tests/ (main.tf — sandbox + dind_test)
+  → tflib/imagetest/sandboxes/bash/ (sandbox build)
+  → tflib/imagetest/tests/docker-in-docker/ (local wrapping var.tests)
+  → x/cue/tflib/publisher/ (providers.tf, main.tf, cache.tf, tests.tf)
+  → x/cue/tflib/publisher/internalpublisher/ (main.tf, outputs.tf)
+Exercises:
+- for_each module expansion (locked configs)
+- Conditional build via count (cache hit/miss)
+- Provider alias passing via configuration_aliases (public variant)
+- depends_on ordering (sign → attest → output, test → tagger)
+- for_each on resources within a module (per-arch attest)
+- Disabled module (stig_check count=0)
+- Output wiring chains across module boundaries
+- null_resource local-exec compatibility
+- Separate generated.tf for variables and outputs
+- Runtime module output through variable → local → resource config
+  (bash_sandbox.image_ref → var.tests → local.tests → resource)
+
+-- providers.tf --
+terraform {
+  required_providers {
+    test = { source = "hashicorp/test" }
+    null = { source = "hashicorp/null" }
+  }
+}
+
+provider "test" {}
+provider "test" {
+  alias           = "public"
+  resource_prefix = "public"
+}
+
+-- main.tf --
+variable "target_repository" {
+  default = "registry.example.com"
+}
+
+locals {
+  scratch_repository = "${var.target_repository}/test-tmp"
+}
+
+-- generated.tf --
+module "crane" {
+  providers = {
+    test.public = test.public
+  }
+  scratch_repository = local.scratch_repository
+  source             = "./images/crane"
+  target_repository  = "${var.target_repository}/crane"
+}
+
+output "crane_summary" {
+  value = module.crane.summary
+}
+
+-- images/crane/main.tf --
+variable "target_repository" { type = string }
+variable "scratch_repository" { type = string }
+
+locals {
+  locked_configs = {
+    crane = {
+      configs = { amd64 = "amd64-config", arm64 = "arm64-config" }
+      tags    = ["latest"]
+    }
+  }
+}
+
+module "build" {
+  for_each          = local.locked_configs
+  source            = "../../x/cue/tflib/publisher"
+  target_repository = var.target_repository
+  configs           = each.value.configs
+  check_stig        = false
+}
+
+module "test" {
+  for_each          = local.locked_configs
+  source            = "./tests"
+  name              = each.key
+  digest            = module.build[each.key].image_ref
+  target_repository = var.scratch_repository
+}
+
+module "tagger" {
+  source     = "../../tflib/tagger"
+  depends_on = [module.test]
+  tags = {
+    for k in keys(module.build) :
+    "latest" => module.build[k].image_ref
+  }
+}
+
+-- images/crane/public.tf --
+terraform {
+  required_providers {
+    test = {
+      source                = "hashicorp/test"
+      configuration_aliases = [test.public]
+    }
+  }
+}
+
+module "public_build" {
+  for_each          = local.locked_configs
+  source            = "../../x/cue/tflib/publisher"
+  target_repository = "${var.target_repository}-public"
+  configs           = each.value.configs
+  check_stig        = false
+  providers         = { test = test.public }
+}
+
+-- images/crane/generated.tf --
+output "summary" {
+  value = {
+    tags = module.tagger.tag_count
+  }
+}
+
+output "image_ref" {
+  value = module.build["crane"].image_ref
+}
+
+output "public_image_ref" {
+  value = module.public_build["crane"].image_ref
+}
+
+-- images/crane/tests/main.tf --
+variable "name" { type = string }
+variable "digest" { type = string }
+variable "target_repository" { type = string }
+
+module "bash_sandbox" {
+  source            = "../../../tflib/imagetest/sandboxes/bash"
+  target_repository = var.target_repository
+}
+
+module "dind_test" {
+  source = "../../../tflib/imagetest/tests/docker-in-docker"
+  name   = var.name
+
+  images = { crane = var.digest }
+
+  tests = [
+    {
+      name  = "smoke"
+      image = module.bash_sandbox.image_ref
+      cmd   = "./smoke.sh"
+    }
+  ]
+}
+
+output "result" {
+  value = module.dind_test.result
+}
+
+-- tflib/imagetest/sandboxes/bash/main.tf --
+terraform {
+  required_providers {
+    test = { source = "hashicorp/test" }
+  }
+}
+
+variable "target_repository" { type = string }
+
+resource "test_resource" "build" {
+  value = "${var.target_repository}:sandbox"
+}
+
+output "image_ref" {
+  value = test_resource.build.value
+}
+
+-- tflib/imagetest/tests/docker-in-docker/main.tf --
+terraform {
+  required_providers {
+    test = { source = "hashicorp/test" }
+  }
+}
+
+variable "name" {
+  default = null
+}
+
+variable "images" {
+  type = map(string)
+}
+
+variable "tests" {
+  type = list(object({
+    name  = string
+    image = string
+    cmd   = string
+  }))
+}
+
+locals {
+  tests = [for test in var.tests : merge(test, {
+    runner = "dind"
+  })]
+}
+
+resource "test_resource" "run" {
+  value = jsonencode({
+    name   = var.name
+    images = var.images
+    tests  = local.tests
+  })
+}
+
+output "result" {
+  value = test_resource.run.value
+}
+
+-- x/cue/tflib/publisher/providers.tf --
+terraform {
+  required_providers {
+    test = { source = "hashicorp/test" }
+    null = { source = "hashicorp/null" }
+  }
+}
+
+-- x/cue/tflib/publisher/main.tf --
+variable "target_repository" { type = string }
+variable "configs" { type = map(string) }
+variable "check_stig" {
+  type    = bool
+  default = false
+}
+
+locals {
+  cache_key   = sha256(jsonencode(var.configs))
+  cached_ref  = ""
+  needs_build = local.cached_ref == ""
+  image_ref   = local.needs_build ? module.this[0].image_ref : local.cached_ref
+}
+
+module "this" {
+  count  = local.needs_build ? 1 : 0
+  source = "./internalpublisher"
+
+  target_repository = var.target_repository
+  configs           = var.configs
+}
+
+output "image_ref" {
+  value      = local.image_ref
+  depends_on = [module.stig_check]
+}
+
+-- x/cue/tflib/publisher/cache.tf --
+resource "null_resource" "cache_record" {
+  count = local.needs_build ? 1 : 0
+
+  triggers = {
+    cache_key = local.cache_key
+    image_ref = module.this[0].image_ref
+  }
+
+  provisioner "local-exec" {
+    command = "echo cache_put ${local.cache_key}"
+  }
+}
+
+-- x/cue/tflib/publisher/tests.tf --
+module "stig_check" {
+  count  = var.check_stig ? 1 : 0
+  source = "../../tflib/stig"
+  image  = local.image_ref
+}
+
+-- x/cue/tflib/publisher/internalpublisher/main.tf --
+variable "target_repository" { type = string }
+variable "configs" { type = map(string) }
+
+resource "test_resource" "build" {
+  value = "${var.target_repository}:${sha256(jsonencode(var.configs))}"
+}
+
+resource "test_resource" "sign" {
+  value = test_resource.build.value
+}
+
+resource "test_resource" "check_sbom" {
+  for_each = var.configs
+  value    = "${test_resource.build.value}:${each.key}"
+}
+
+-- x/cue/tflib/publisher/internalpublisher/outputs.tf --
+output "image_ref" {
+  value      = test_resource.sign.value
+  depends_on = [test_resource.attest]
+}
+
+-- x/cue/tflib/publisher/internalpublisher/attest.tf --
+resource "test_resource" "attest" {
+  for_each   = var.configs
+  value      = "${test_resource.build.value}:${each.key}:attested"
+  depends_on = [test_resource.check_sbom, test_resource.sign]
+}
+
+-- tflib/stig/main.tf --
+variable "image" { type = string }
+
+resource "test_resource" "scan" {
+  value = "stig:${var.image}"
+}
+
+output "reports" {
+  value = test_resource.scan.value
+}
+
+-- tflib/tagger/providers.tf --
+terraform {
+  required_providers {
+    test = { source = "hashicorp/test" }
+  }
+}
+
+-- tflib/tagger/main.tf --
+variable "tags" { type = map(string) }
+
+resource "test_resource" "tag" {
+  for_each = var.tags
+  value    = "${each.key}=${each.value}"
+}
+
+output "tag_count" {
+  value = tostring(length(var.tags))
+}
+
+-- .terraform/modules/modules.json --
+{"Modules":[
+  {"Key":"","Source":"","Dir":"."},
+  {"Key":"crane","Source":"./images/crane","Dir":"images/crane"},
+  {"Key":"crane.build","Source":"../../x/cue/tflib/publisher","Dir":"x/cue/tflib/publisher"},
+  {"Key":"crane.build.this","Source":"./internalpublisher","Dir":"x/cue/tflib/publisher/internalpublisher"},
+  {"Key":"crane.build.stig_check","Source":"../../tflib/stig","Dir":"tflib/stig"},
+  {"Key":"crane.public_build","Source":"../../x/cue/tflib/publisher","Dir":"x/cue/tflib/publisher"},
+  {"Key":"crane.public_build.this","Source":"./internalpublisher","Dir":"x/cue/tflib/publisher/internalpublisher"},
+  {"Key":"crane.public_build.stig_check","Source":"../../tflib/stig","Dir":"tflib/stig"},
+  {"Key":"crane.test","Source":"./tests","Dir":"images/crane/tests"},
+  {"Key":"crane.test.bash_sandbox","Source":"../../../tflib/imagetest/sandboxes/bash","Dir":"tflib/imagetest/sandboxes/bash"},
+  {"Key":"crane.test.dind_test","Source":"../../../tflib/imagetest/tests/docker-in-docker","Dir":"tflib/imagetest/tests/docker-in-docker"},
+  {"Key":"crane.tagger","Source":"../../tflib/tagger","Dir":"tflib/tagger"}
+]}
+
+-- build --
+module.crane.**
+output.*
+-- want.json --
+{
+  "targets": 29,
+  "outputs": {
+    "module.crane.module.build[\"crane\"].module.this[0].output.image_ref": "registry.example.com/crane:9b6608ec5952630d3ebeb7c639d4522c01c3b10d2d7b83f1be7d1aee6231d001",
+    "module.crane.module.build[\"crane\"].output.image_ref": "registry.example.com/crane:9b6608ec5952630d3ebeb7c639d4522c01c3b10d2d7b83f1be7d1aee6231d001",
+    "module.crane.module.public_build[\"crane\"].module.this[0].output.image_ref": "registry.example.com/crane-public:9b6608ec5952630d3ebeb7c639d4522c01c3b10d2d7b83f1be7d1aee6231d001",
+    "module.crane.module.public_build[\"crane\"].output.image_ref": "registry.example.com/crane-public:9b6608ec5952630d3ebeb7c639d4522c01c3b10d2d7b83f1be7d1aee6231d001",
+    "module.crane.module.tagger.output.tag_count": "1",
+    "module.crane.module.test[\"crane\"].module.bash_sandbox.output.image_ref": "registry.example.com/test-tmp:sandbox",
+    "module.crane.module.test[\"crane\"].module.dind_test.output.result": "{\"images\":{\"crane\":\"registry.example.com/crane:9b6608ec5952630d3ebeb7c639d4522c01c3b10d2d7b83f1be7d1aee6231d001\"},\"name\":\"crane\",\"tests\":[{\"cmd\":\"./smoke.sh\",\"image\":\"registry.example.com/test-tmp:sandbox\",\"name\":\"smoke\",\"runner\":\"dind\"}]}",
+    "module.crane.module.test[\"crane\"].output.result": "{\"images\":{\"crane\":\"registry.example.com/crane:9b6608ec5952630d3ebeb7c639d4522c01c3b10d2d7b83f1be7d1aee6231d001\"},\"name\":\"crane\",\"tests\":[{\"cmd\":\"./smoke.sh\",\"image\":\"registry.example.com/test-tmp:sandbox\",\"name\":\"smoke\",\"runner\":\"dind\"}]}",
+    "module.crane.output.image_ref": "registry.example.com/crane:9b6608ec5952630d3ebeb7c639d4522c01c3b10d2d7b83f1be7d1aee6231d001",
+    "module.crane.output.public_image_ref": "registry.example.com/crane-public:9b6608ec5952630d3ebeb7c639d4522c01c3b10d2d7b83f1be7d1aee6231d001",
+    "module.crane.output.summary": "cty.ObjectVal(map[string]cty.Value{\"tags\":cty.StringVal(\"1\")})",
+    "output.crane_summary": "cty.ObjectVal(map[string]cty.Value{\"tags\":cty.StringVal(\"1\")})"
+  },
+  "actions": {
+    "submitted": 17,
+    "executed": 17,
+    "cached": 0,
+    "failed": 0
+  }
+}

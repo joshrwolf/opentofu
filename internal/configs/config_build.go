@@ -84,7 +84,7 @@ func buildTestModules(ctx context.Context, root *Config, walker ModuleWalker) hc
 				Call: NewStaticModuleCall(
 					path,
 					run.Module.DeclRange,
-					func(v *Variable) (cty.Value, hcl.Diagnostics) {
+					func(_ context.Context, v *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 						// Handle the case where this is overridden in the test run block
 						expr, isOverridden := run.Variables[v.Name]
 						if isOverridden {

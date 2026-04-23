@@ -7,6 +7,7 @@ package lang
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -524,6 +525,50 @@ func TestScopeEvalContextWithParent(t *testing.T) {
 			t.Fatalf("Resulting EvalCtx has unexpected parent: %v", root.Parent())
 		}
 	})
+}
+
+func TestScopeEvalContextProviderFunctionsDoNotMutateSharedTable(t *testing.T) {
+	expr, diags := hclsyntax.ParseExpression([]byte(`provider::test::echo()`), "test.tf", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		t.Fatalf("parse expression: %s", diags.Error())
+	}
+	refs, refDiags := ReferencesInExpr(addrs.ParseRef, expr)
+	if refDiags.HasErrors() {
+		t.Fatalf("parse refs: %s", refDiags.Err().Error())
+	}
+
+	scope := &Scope{
+		Data:     &dataForTests{},
+		ParseRef: addrs.ParseRef,
+		ProviderFunctions: func(context.Context, addrs.ProviderFunction, tfdiags.SourceRange) (*function.Function, tfdiags.Diagnostics) {
+			fn := function.New(&function.Spec{
+				Type: func([]cty.Value) (cty.Type, error) {
+					return cty.String, nil
+				},
+				Impl: func([]cty.Value, cty.Type) (cty.Value, error) {
+					return cty.StringVal("ok"), nil
+				},
+			})
+			return &fn, nil
+		},
+	}
+
+	baseFuncs := scope.Functions()
+	_, ctxDiags := scope.EvalContext(t.Context(), refs)
+	if ctxDiags.HasErrors() {
+		t.Fatalf("eval context: %s", ctxDiags.Err().Error())
+	}
+
+	providerFn, ok := refs[0].Subject.(addrs.ProviderFunction)
+	if !ok {
+		t.Fatalf("want provider function ref, got %T", refs[0].Subject)
+	}
+	if _, ok := baseFuncs[providerFn.String()]; ok {
+		t.Fatalf("shared base function table mutated with provider function %q", providerFn.String())
+	}
+	if _, ok := scope.Functions()[providerFn.String()]; ok {
+		t.Fatalf("scope function table mutated with provider function %q", providerFn.String())
+	}
 }
 
 func TestScopeExpandEvalBlock(t *testing.T) {

@@ -6,6 +6,7 @@
 package configs
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -179,7 +180,7 @@ func TestStaticScope_GetInputVariable(t *testing.T) {
 
 		call := NewStaticModuleCall(
 			addrs.RootModule, hcl.Range{},
-			func(v *Variable) (cty.Value, hcl.Diagnostics) {
+			func(_ context.Context, v *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 				return tests[v.Name].callerVal, nil
 			},
 			".",
@@ -203,7 +204,7 @@ func TestStaticScope_GetInputVariable(t *testing.T) {
 		}
 
 		eval := NewStaticEvaluator(mod, call)
-		scope := newStaticScope(eval, test_ident)
+		scope := newStaticScopeWithOptions(eval, test_ident, StaticEvalOptions{})
 
 		for name, test := range tests {
 			t.Run(name, func(t *testing.T) {
@@ -229,7 +230,7 @@ func TestStaticScope_GetInputVariable(t *testing.T) {
 
 		call := NewStaticModuleCall(
 			addrs.RootModule, hcl.Range{},
-			func(v *Variable) (cty.Value, hcl.Diagnostics) {
+			func(_ context.Context, v *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 				return cty.StringVal("not a list"), nil
 			},
 			".",
@@ -239,7 +240,7 @@ func TestStaticScope_GetInputVariable(t *testing.T) {
 		assertNoDiagnostics(t, diags)
 
 		eval := NewStaticEvaluator(mod, call)
-		scope := newStaticScope(eval, test_ident)
+		scope := newStaticScopeWithOptions(eval, test_ident, StaticEvalOptions{})
 
 		addr := addrs.InputVariable{Name: "bad_default"}
 		_, moreDiags := scope.Data.GetInputVariable(t.Context(), addr, tfdiags.SourceRange{Filename: "test.tf"})
@@ -267,7 +268,7 @@ func TestStaticScope_GetInputVariable(t *testing.T) {
 
 		call := NewStaticModuleCall(
 			addrs.RootModule, hcl.Range{},
-			func(v *Variable) (cty.Value, hcl.Diagnostics) {
+			func(_ context.Context, v *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 				return cty.NullVal(cty.String), nil
 			},
 			".",
@@ -277,7 +278,7 @@ func TestStaticScope_GetInputVariable(t *testing.T) {
 		assertNoDiagnostics(t, diags)
 
 		eval := NewStaticEvaluator(mod, call)
-		scope := newStaticScope(eval, test_ident)
+		scope := newStaticScopeWithOptions(eval, test_ident, StaticEvalOptions{})
 
 		addr := addrs.InputVariable{Name: "not_nullable"}
 		_, moreDiags := scope.Data.GetInputVariable(t.Context(), addr, tfdiags.SourceRange{Filename: "test.tf"})
@@ -307,7 +308,7 @@ func TestStaticScope_GetLocalValue(t *testing.T) {
 
 		call := NewStaticModuleCall(
 			addrs.RootModule, hcl.Range{},
-			func(v *Variable) (cty.Value, hcl.Diagnostics) {
+			func(_ context.Context, v *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 				var diags tfdiags.Diagnostics
 				diags = diags.Append(fmt.Errorf("no variables here"))
 				return cty.DynamicVal, diags.ToHCL()
@@ -319,7 +320,7 @@ func TestStaticScope_GetLocalValue(t *testing.T) {
 		assertNoDiagnostics(t, diags)
 
 		eval := NewStaticEvaluator(mod, call)
-		scope := newStaticScope(eval, test_ident)
+		scope := newStaticScopeWithOptions(eval, test_ident, StaticEvalOptions{})
 
 		addr := addrs.LocalValue{Name: "foo"}
 		got, moreDiags := scope.Data.GetLocalValue(t.Context(), addr, tfdiags.SourceRange{Filename: "test.tf"})
@@ -338,7 +339,7 @@ func TestStaticScope_GetLocalValue(t *testing.T) {
 
 		call := NewStaticModuleCall(
 			addrs.RootModule, hcl.Range{},
-			func(v *Variable) (cty.Value, hcl.Diagnostics) {
+			func(_ context.Context, v *Variable, _ EvalOverlay) (cty.Value, hcl.Diagnostics) {
 				var diags tfdiags.Diagnostics
 				diags = diags.Append(fmt.Errorf("no variables here"))
 				return cty.DynamicVal, diags.ToHCL()
@@ -350,7 +351,7 @@ func TestStaticScope_GetLocalValue(t *testing.T) {
 		assertNoDiagnostics(t, diags)
 
 		eval := NewStaticEvaluator(mod, call)
-		scope := newStaticScope(eval, test_ident)
+		scope := newStaticScopeWithOptions(eval, test_ident, StaticEvalOptions{})
 
 		addr := addrs.LocalValue{Name: "nonexist"}
 		_, moreDiags := scope.Data.GetLocalValue(t.Context(), addr, tfdiags.SourceRange{Filename: "test.tf"})

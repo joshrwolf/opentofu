@@ -226,6 +226,10 @@ func parseRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
 		})
 	case "module":
 		return parseModuleCallRef(traversal)
+	case "run":
+		return parseSingleAttrRef(traversal, func(name string) Referenceable {
+			return Run{Name: name}
+		})
 	case "path":
 		return parseSingleAttrRef(traversal, func(name string) Referenceable {
 			return PathAttr{Name: name}

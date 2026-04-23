@@ -135,7 +135,7 @@ func TestVariableMapper(t *testing.T) {
 	}
 	for varName, wantVal := range cases {
 		t.Run(varName, func(t *testing.T) {
-			val, diag := vm(&configs.Variable{Name: varName})
+			val, diag := vm(t.Context(), &configs.Variable{Name: varName}, configs.EvalOverlay{})
 			if diag.HasErrors() {
 				t.Fatalf("unexpected diagnostics from the variable mapper: %s", diag)
 			}
